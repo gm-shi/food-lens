@@ -3,19 +3,22 @@ import { analyzePhoto, ApiError, type ApiErrorCode } from '../lib/api';
 import { prepareImage, type PreparedImage } from '../lib/image';
 import { db, localDateKey, type FoodItem } from '../lib/db';
 import { hasSubstance, rescale, totals } from '../lib/nutrition';
+import { fmt } from '../lib/nutrients';
+import { usePregnancy } from '../lib/hooks';
 import { updateSettings, useSettings } from '../lib/settings';
 import { useT } from '../i18n';
-import { MinusIcon, PlusIcon, XIcon } from '../components/Icons';
+import { AlertIcon, MinusIcon, PlusIcon, XIcon } from '../components/Icons';
 
 type Phase =
   | { kind: 'preparing' }
   | { kind: 'loading' }
-  | { kind: 'result'; basis: FoodItem[]; items: FoodItem[]; summary: string; isFood: boolean }
+  | { kind: 'result'; basis: FoodItem[]; items: FoodItem[]; summary: string; isFood: boolean; warnings: string[] }
   | { kind: 'error'; code: ApiErrorCode | 'image' };
 
 export default function Analyze({ file, onClose }: { file: File; onClose: () => void }) {
   const t = useT();
   const { lang, passcode } = useSettings();
+  const preg = usePregnancy();
   const [img, setImg] = useState<PreparedImage | null>(null);
   const [phase, setPhase] = useState<Phase>({ kind: 'preparing' });
   const [note, setNote] = useState('');
@@ -25,6 +28,8 @@ export default function Analyze({ file, onClose }: { file: File; onClose: () => 
   const alive = useRef(true);
   const passcodeRef = useRef(passcode);
   passcodeRef.current = passcode;
+  const trimesterRef = useRef(preg.week === null ? null : preg.trimester);
+  trimesterRef.current = preg.week === null ? null : preg.trimester;
 
   useEffect(() => {
     alive.current = true;
@@ -36,9 +41,9 @@ export default function Analyze({ file, onClose }: { file: File; onClose: () => 
   async function run(prepared: PreparedImage, userNote: string) {
     setPhase({ kind: 'loading' });
     try {
-      const a = await analyzePhoto({ base64: prepared.base64, mediaType: prepared.mediaType, lang, note: userNote, passcode: passcodeRef.current });
+      const a = await analyzePhoto({ base64: prepared.base64, mediaType: prepared.mediaType, lang, note: userNote, passcode: passcodeRef.current, trimester: trimesterRef.current });
       if (!alive.current) return;
-      setPhase({ kind: 'result', basis: a.items, items: a.items, summary: a.summary, isFood: a.is_food });
+      setPhase({ kind: 'result', basis: a.items, items: a.items, summary: a.summary, isFood: a.is_food, warnings: a.warnings });
     } catch (e) {
       if (!alive.current) return;
       setPhase({ kind: 'error', code: e instanceof ApiError ? e.code : 'server' });
@@ -78,7 +83,7 @@ export default function Analyze({ file, onClose }: { file: File; onClose: () => 
     setSaveError(false);
     try {
       const items = phase.items.filter(hasSubstance);
-      await db.meals.add({ date: localDateKey(), ts: Date.now(), thumb: img.thumb, summary: phase.summary, note: note.trim(), items });
+      await db.meals.add({ date: localDateKey(), ts: Date.now(), thumb: img.thumb, summary: phase.summary, note: note.trim(), items, warnings: phase.warnings });
       onClose();
     } catch {
       if (alive.current) setSaveError(true);
@@ -156,7 +161,7 @@ export default function Analyze({ file, onClose }: { file: File; onClose: () => 
                           {it.confidence === 'low' && <p className="text-xs text-muted">{t('analyze.rough')}</p>}
                         </div>
                         <p className="shrink-0 tabular-nums">
-                          {it.calories} <span className="text-xs text-muted">{t('kcal')}</span>
+                          {fmt('energy', it.energy)} <span className="text-xs text-muted">{t('kcal')}</span>
                         </p>
                       </div>
                       <div className="mt-2 flex items-center justify-between">
@@ -189,15 +194,29 @@ export default function Analyze({ file, onClose }: { file: File; onClose: () => 
                   ))}
                 </ul>
                 {tot && (
-                  <div className="mt-3 flex items-baseline justify-between px-1">
-                    <span className="text-sm text-muted">
-                      {t('protein')} {tot.protein}{t('g')} · {t('carbs')} {tot.carbs}{t('g')} · {t('fat')} {tot.fat}{t('g')}
-                    </span>
-                    <span className="tabular-nums">
-                      <span className="text-sm text-muted">{t('analyze.total')} </span>
-                      <span className="text-xl font-semibold">{tot.calories}</span>
-                      <span className="text-sm text-muted"> {t('kcal')}</span>
-                    </span>
+                  <div className="mt-3 px-1">
+                    <div className="flex items-baseline justify-between">
+                      <span className="text-sm text-muted">{t('analyze.total')}</span>
+                      <span className="tabular-nums">
+                        <span className="text-xl font-semibold">{fmt('energy', tot.energy)}</span>
+                        <span className="text-sm text-muted"> {t('kcal')}</span>
+                      </span>
+                    </div>
+                    <p className="mt-1 text-xs text-muted">
+                      {t('n.protein')} {fmt('protein', tot.protein)}g · {t('n.fiber')} {fmt('fiber', tot.fiber)}g · {t('n.iron')} {fmt('iron', tot.iron)}mg · {t('n.calcium')} {fmt('calcium', tot.calcium)}mg · {t('n.folate')} {fmt('folate', tot.folate)}µg
+                    </p>
+                  </div>
+                )}
+                {phase.warnings.length > 0 && (
+                  <div className="mt-4 rounded-2xl bg-warn/10 px-4 py-3">
+                    <p className="flex items-center gap-1.5 text-sm font-medium text-warn">
+                      <AlertIcon width={16} height={16} /> {t('analyze.safety')}
+                    </p>
+                    <ul className="mt-1 space-y-1 text-sm">
+                      {phase.warnings.map((w, i) => (
+                        <li key={i}>{w}</li>
+                      ))}
+                    </ul>
                   </div>
                 )}
               </>

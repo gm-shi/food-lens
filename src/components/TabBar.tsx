@@ -1,12 +1,13 @@
 import { useT } from '../i18n';
-import { ClockIcon, HomeIcon, SlidersIcon } from './Icons';
+import { ClockIcon, HomeIcon, ScaleIcon, SlidersIcon } from './Icons';
 
-export type Tab = 'today' | 'history' | 'settings';
+export type Tab = 'today' | 'weight' | 'history' | 'settings';
 
 export default function TabBar({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) {
   const t = useT();
   const tabs: { id: Tab; label: string; Icon: typeof HomeIcon }[] = [
     { id: 'today', label: t('tab.today'), Icon: HomeIcon },
+    { id: 'weight', label: t('tab.weight'), Icon: ScaleIcon },
     { id: 'history', label: t('tab.history'), Icon: ClockIcon },
     { id: 'settings', label: t('tab.settings'), Icon: SlidersIcon },
   ];

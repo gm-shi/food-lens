@@ -24,9 +24,24 @@ export const CameraIcon = (p: P) => (
   </svg>
 );
 
+export const PhotoIcon = (p: P) => (
+  <svg {...base(p)}>
+    <rect x="3" y="4" width="18" height="16" rx="3" />
+    <circle cx="8.5" cy="9" r="1.5" />
+    <path d="m21 16-5-5-7 7M3 18l4-4 3 3" />
+  </svg>
+);
+
 export const HomeIcon = (p: P) => (
   <svg {...base(p)}>
     <path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z" />
+  </svg>
+);
+
+export const ScaleIcon = (p: P) => (
+  <svg {...base(p)}>
+    <rect x="3" y="3" width="18" height="18" rx="4" />
+    <path d="M7 12a5 5 0 0 1 10 0M12 12l2-3" />
   </svg>
 );
 
@@ -70,8 +85,21 @@ export const PlusIcon = (p: P) => (
   </svg>
 );
 
-export const ChevronIcon = (p: P) => (
+export const CheckIcon = (p: P) => (
   <svg {...base(p)}>
-    <path d="m9 6 6 6-6 6" />
+    <path d="m5 12 4 4L19 6" />
+  </svg>
+);
+
+export const SparkIcon = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M12 3v4M12 17v4M3 12h4M17 12h4M6.5 6.5l2 2M15.5 15.5l2 2M6.5 17.5l2-2M15.5 8.5l2-2" />
+  </svg>
+);
+
+export const AlertIcon = (p: P) => (
+  <svg {...base(p)}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 8v5M12 16h.01" />
   </svg>
 );

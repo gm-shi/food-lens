@@ -1,14 +1,11 @@
 import Dexie, { type EntityTable } from 'dexie';
+import { NUTRIENT_KEYS, type Nutrients } from './nutrients';
 
 export type Confidence = 'low' | 'medium' | 'high';
 
-export interface FoodItem {
+export interface FoodItem extends Nutrients {
   name: string;
   grams: number;
-  calories: number;
-  protein: number;
-  carbs: number;
-  fat: number;
   confidence: Confidence;
 }
 
@@ -22,15 +19,65 @@ export interface Meal {
   summary: string;
   note: string;
   items: FoodItem[];
+  /** Pregnancy food-safety notes from the analysis, in the app language */
+  warnings: string[];
+}
+
+export interface WeightEntry {
+  id: number;
+  date: string;
+  ts: number;
+  kg: number;
+}
+
+export interface Supplement {
+  id: number;
+  name: string;
+  enabled: boolean;
+  /** Nutrients per daily dose */
+  nutrients: Partial<Nutrients>;
+}
+
+export interface SupplementLog {
+  id: number;
+  date: string;
+  supplementId: number;
 }
 
 export const db = new Dexie('food-lens') as Dexie & {
   meals: EntityTable<Meal, 'id'>;
+  weights: EntityTable<WeightEntry, 'id'>;
+  supplements: EntityTable<Supplement, 'id'>;
+  supplementLogs: EntityTable<SupplementLog, 'id'>;
 };
 
 db.version(1).stores({
   meals: '++id, date, ts',
 });
+
+db.version(2)
+  .stores({
+    meals: '++id, date, ts',
+    weights: '++id, &date, ts',
+    supplements: '++id',
+    supplementLogs: '++id, date, [date+supplementId]',
+  })
+  .upgrade((tx) =>
+    tx
+      .table('meals')
+      .toCollection()
+      .modify((m: Record<string, unknown>) => {
+        // v1 items had calories/protein/carbs/fat only
+        const items = Array.isArray(m.items) ? (m.items as Record<string, unknown>[]) : [];
+        m.items = items.map((it) => {
+          const out: Record<string, unknown> = { name: it.name, grams: it.grams, confidence: it.confidence ?? 'medium' };
+          for (const k of NUTRIENT_KEYS) out[k] = typeof it[k] === 'number' ? it[k] : 0;
+          if (typeof it.calories === 'number' && !it.energy) out.energy = it.calories;
+          return out;
+        });
+        if (!Array.isArray(m.warnings)) m.warnings = [];
+      }),
+  );
 
 export function localDateKey(ts: number = Date.now()): string {
   const d = new Date(ts);

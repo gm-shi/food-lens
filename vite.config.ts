@@ -7,6 +7,7 @@ const base = '/food-lens/';
 
 export default defineConfig({
   base,
+  server: { port: 5174, strictPort: true },
   plugins: [
     react(),
     tailwindcss(),

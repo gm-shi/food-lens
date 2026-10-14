@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useSettings } from './lib/settings';
 import Onboarding from './screens/Onboarding';
 import Today from './screens/Today';
+import Weight from './screens/Weight';
 import History from './screens/History';
 import Settings from './screens/Settings';
 import Analyze from './screens/Analyze';
@@ -21,7 +22,8 @@ export default function App() {
 
   return (
     <div className="mx-auto min-h-dvh max-w-md">
-      {tab === 'today' && <Today onPick={setFile} />}
+      {tab === 'today' && <Today onPick={setFile} onOpenSettings={() => setTab('settings')} />}
+      {tab === 'weight' && <Weight />}
       {tab === 'history' && <History />}
       {tab === 'settings' && <Settings />}
       <TabBar tab={tab} onChange={setTab} />
