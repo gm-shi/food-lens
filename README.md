@@ -1,6 +1,6 @@
 # 食记 · Food Lens
 
-A small, calm pregnancy food diary for a few people in New South Wales, Australia. Pick a photo of your meal, get an estimate of energy and 13 nutrients, adjust the grams, save. The home screen shows today's intake against Australian pregnancy targets, your supplements, any food-safety notes for what you ate, and a one-line suggestion for what to eat next. A weight tab tracks gain against the recommended range. Everything is stored on the phone; nothing is logged anywhere else. Chinese and English.
+A small, calm pregnancy food diary for a few people in New South Wales, Australia. Pick a photo of your meal, or describe it in a sentence, and get an estimate of energy and 13 nutrients; adjust the grams, save, or log a past meal again with one tap. The home screen shows today's intake against Australian pregnancy targets, your supplements (set up by photographing the label), any food-safety notes for what you ate, and a one-line suggestion for what to eat next. A weight tab tracks gain against the recommended range. An optional gestational-diabetes mode shows carbohydrate per meal against the limits your dietitian gives you. Everything is stored on the phone; nothing is logged anywhere else. Chinese and English.
 
 **Not medical advice.** Targets are the population reference values for pregnancy; a doctor or midwife may set different ones, and every target is editable in Settings. Micronutrients estimated from photos are rough; the weekly trend is what matters.
 
@@ -43,6 +43,14 @@ Targets come from the Australian sources below and live in `src/lib/nrv.ts`; the
 - Food Standards Australia New Zealand (foodstandards.gov.au/consumer/safety/listeria and the mercury-in-fish advice) and the NSW Health listeriosis fact sheet: the foods behind the safety notes.
 
 All values were checked against those pages on 2026-10-14.
+
+## Worker routes
+
+- `POST /analyze` — a photo (`image`, `mediaType`) or a text description (`text`), plus `lang`, `note`, `trimester` → items with 14 nutrients, a summary and pregnancy safety notes.
+- `POST /label` — a photo of a supplement or food label → per-daily-dose amounts, name and dose.
+- `POST /suggest` — today's totals, targets and meals (and gestational-diabetes limits if on) → one or two sentences.
+
+All routes need the `x-app-passcode` header and an allowed `Origin`.
 
 ## Costs
 

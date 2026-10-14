@@ -49,24 +49,52 @@ async function post(path: string, passcode: string, body: unknown): Promise<unkn
   }
 }
 
+export type MealSource = { kind: 'photo'; base64: string; mediaType: string } | { kind: 'text'; text: string };
+
 export interface AnalyzeInput {
-  base64: string;
-  mediaType: string;
+  source: MealSource;
   lang: Lang;
   note: string;
   passcode: string;
   trimester: Trimester | null;
 }
 
-export async function analyzePhoto(input: AnalyzeInput): Promise<Analysis> {
-  const data = (await post('/analyze', input.passcode, {
-    image: input.base64,
-    mediaType: input.mediaType,
-    lang: input.lang,
-    note: input.note,
-    trimester: input.trimester,
-  })) as { result?: unknown };
+export async function analyzeMeal(input: AnalyzeInput): Promise<Analysis> {
+  const body: Record<string, unknown> = { lang: input.lang, note: input.note, trimester: input.trimester };
+  if (input.source.kind === 'photo') {
+    body.image = input.source.base64;
+    body.mediaType = input.source.mediaType;
+  } else {
+    body.text = input.source.text;
+  }
+  const data = (await post('/analyze', input.passcode, body)) as { result?: unknown };
   return sanitize(data.result);
+}
+
+export interface LabelResult {
+  readable: boolean;
+  name: string;
+  dose: string;
+  notes: string;
+  nutrients: Partial<Nutrients>;
+}
+
+/** Read a supplement or food label photo into per-daily-dose nutrient amounts. */
+export async function scanLabel(input: { base64: string; mediaType: string; lang: Lang; passcode: string }): Promise<LabelResult> {
+  const data = (await post('/label', input.passcode, { image: input.base64, mediaType: input.mediaType, lang: input.lang })) as { label?: unknown };
+  const r = (data.label && typeof data.label === 'object' ? data.label : {}) as Record<string, unknown>;
+  const nutrients: Partial<Nutrients> = {};
+  for (const k of NUTRIENT_KEYS) {
+    const v = roundNutrient(k, num(r[k]));
+    if (v > 0) nutrients[k] = v;
+  }
+  return {
+    readable: r.readable !== false && Object.keys(nutrients).length > 0,
+    name: String(r.name ?? '').slice(0, 60),
+    dose: String(r.dose ?? '').slice(0, 60),
+    notes: String(r.notes ?? '').slice(0, 200),
+    nutrients,
+  };
 }
 
 export interface SuggestInput {
@@ -78,6 +106,7 @@ export interface SuggestInput {
   targets: Partial<Record<keyof Nutrients, number>>;
   meals: string[];
   hour: number;
+  gdm: { mainCarbs: number; snackCarbs: number } | null;
 }
 
 export async function suggestNext(input: SuggestInput): Promise<string> {

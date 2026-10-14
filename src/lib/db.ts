@@ -21,6 +21,10 @@ export interface Meal {
   items: FoodItem[];
   /** Pregnancy food-safety notes from the analysis, in the app language */
   warnings: string[];
+  /** Main meal or snack (used by the gestational-diabetes carbohydrate limits) */
+  kind?: 'main' | 'snack';
+  /** How the meal was logged */
+  source?: 'photo' | 'text';
 }
 
 export interface WeightEntry {

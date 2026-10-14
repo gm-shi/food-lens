@@ -13,6 +13,27 @@ export interface Profile {
   activity: Activity;
 }
 
+export interface Gdm {
+  enabled: boolean;
+  /** grams of carbohydrate per main meal */
+  mainCarbs: number;
+  /** grams of carbohydrate per snack */
+  snackCarbs: number;
+}
+
+/**
+ * Starting points only; the dietitian's numbers replace them. NDSS carbohydrate-counting guidance
+ * (NDSSFS005 v6, 2023) gives 30-45 g (2-3 × 15 g exchanges) per main meal and 15-30 g per snack for women;
+ * the NDSS gestational-diabetes booklet (v11, 2025) defers the exact amount to the dietitian.
+ */
+export const GDM_DEFAULTS: Gdm = { enabled: false, mainCarbs: 45, snackCarbs: 20 };
+
+/** Effective carbohydrate limit: a cleared or zero field falls back to the default. */
+export function gdmLimit(g: Gdm, kind: 'main' | 'snack'): number {
+  const v = kind === 'snack' ? g.snackCarbs : g.mainCarbs;
+  return v > 0 ? v : kind === 'snack' ? GDM_DEFAULTS.snackCarbs : GDM_DEFAULTS.mainCarbs;
+}
+
 export interface Settings {
   lang: Lang;
   passcode: string;
@@ -20,13 +41,14 @@ export interface Settings {
   profile: Profile | null;
   /** Per-nutrient daily target overrides (doctor's advice) */
   overrides: Partial<Record<NutrientKey, number>>;
+  gdm: Gdm;
 }
 
 const KEY = 'food-lens:settings';
 
 function defaults(): Settings {
   const zh = typeof navigator !== 'undefined' && navigator.language.toLowerCase().startsWith('zh');
-  return { lang: zh ? 'zh' : 'en', passcode: '', onboarded: false, profile: null, overrides: {} };
+  return { lang: zh ? 'zh' : 'en', passcode: '', onboarded: false, profile: null, overrides: {}, gdm: { ...GDM_DEFAULTS } };
 }
 
 function load(): Settings {
@@ -35,7 +57,8 @@ function load(): Settings {
     if (!raw) return defaults();
     // v1 stored a single calorie `target`; it is dropped, the profile now derives energy.
     const { target: _legacy, ...saved } = JSON.parse(raw) as Partial<Settings> & { target?: number };
-    const s: Settings = { ...defaults(), ...saved, overrides: { ...(saved.overrides ?? {}) } };
+    const g = { ...GDM_DEFAULTS, ...(saved.gdm ?? {}) };
+    const s: Settings = { ...defaults(), ...saved, overrides: { ...(saved.overrides ?? {}) }, gdm: { ...g, mainCarbs: g.mainCarbs || GDM_DEFAULTS.mainCarbs, snackCarbs: g.snackCarbs || GDM_DEFAULTS.snackCarbs } };
     if (s.profile && (typeof s.profile.dueDate !== 'string' || !Number.isFinite(s.profile.heightCm))) s.profile = null;
     return s;
   } catch {

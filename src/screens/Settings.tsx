@@ -1,10 +1,12 @@
 import { useRef, useState, type ChangeEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, type Meal, type Supplement, type SupplementLog, type WeightEntry } from '../lib/db';
-import { cleanItem } from '../lib/api';
+import { ApiError, cleanItem, scanLabel } from '../lib/api';
+import { prepareImage } from '../lib/image';
+import { CameraIcon } from '../components/Icons';
 import { NUTRIENTS, type NutrientKey } from '../lib/nutrients';
 import { usePregnancy } from '../lib/hooks';
-import { setOverride, updateSettings, useSettings, type Activity, type Profile, type Settings } from '../lib/settings';
+import { GDM_DEFAULTS, setOverride, updateSettings, useSettings, type Activity, type Gdm, type Profile, type Settings } from '../lib/settings';
 import { useT, type Lang, type TKey } from '../i18n';
 import { TrashIcon } from '../components/Icons';
 
@@ -18,6 +20,7 @@ interface Backup {
   supplementLogs?: Omit<SupplementLog, 'id'>[];
   profile?: Profile | null;
   overrides?: Partial<Record<NutrientKey, number>>;
+  gdm?: Gdm;
 }
 
 const SUPP_KEYS: NutrientKey[] = ['folate', 'iodine', 'iron', 'calcium', 'vitD', 'dha', 'vitC', 'vitA'];
@@ -29,6 +32,10 @@ export default function Settings() {
   const preg = usePregnancy();
   const supplements = useLiveQuery(() => db.supplements.toArray(), []) ?? [];
   const importRef = useRef<HTMLInputElement>(null);
+  const scanRef = useRef<HTMLInputElement>(null);
+  const scanTarget = useRef<number | null>(null);
+  const [scanState, setScanState] = useState<{ id: number; text: string; busy?: boolean } | null>(null);
+  const [cardVersion, setCardVersion] = useState<Record<number, number>>({});
   const [msg, setMsg] = useState('');
   const profile = s.profile ?? EMPTY_PROFILE;
 
@@ -47,6 +54,7 @@ export default function Settings() {
       supplementLogs: (await db.supplementLogs.toArray()).map(({ id: _id, ...rest }) => rest),
       profile: s.profile,
       overrides: s.overrides,
+      gdm: s.gdm,
     };
     const blob = new Blob([JSON.stringify(backup)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -81,6 +89,8 @@ export default function Settings() {
             note: typeof m.note === 'string' ? m.note : '',
             items: m.items.map(cleanItem),
             warnings: Array.isArray(m.warnings) ? m.warnings.filter((w): w is string => typeof w === 'string') : [],
+            kind: m.kind === 'main' || m.kind === 'snack' ? m.kind : undefined,
+            source: m.source === 'photo' || m.source === 'text' ? m.source : undefined,
           });
         }
         await db.meals.bulkAdd(fresh);
@@ -120,6 +130,14 @@ export default function Settings() {
         }
         patch.overrides = merged;
       }
+      if (!s.gdm.enabled && data.gdm && typeof data.gdm === 'object' && data.gdm.enabled === true) {
+        const g = data.gdm;
+        patch.gdm = {
+          enabled: true,
+          mainCarbs: typeof g.mainCarbs === 'number' && g.mainCarbs > 0 ? Math.round(g.mainCarbs) : GDM_DEFAULTS.mainCarbs,
+          snackCarbs: typeof g.snackCarbs === 'number' && g.snackCarbs > 0 ? Math.round(g.snackCarbs) : GDM_DEFAULTS.snackCarbs,
+        };
+      }
       if (Object.keys(patch).length) updateSettings(patch);
       setMsg(t(added === 1 ? 'settings.importDoneOne' : 'settings.importDone', { n: added }));
     } catch {
@@ -138,6 +156,50 @@ export default function Settings() {
 
   async function addSupplement() {
     await db.supplements.add({ name: '', enabled: true, nutrients: {} });
+  }
+
+  function startScan(id: number) {
+    scanTarget.current = id;
+    scanRef.current?.click();
+  }
+
+  async function handleScan(e: ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    e.target.value = '';
+    const id = scanTarget.current;
+    if (!f || id === null) return;
+    setScanState({ id, text: t('settings.scanning'), busy: true });
+    let img: Awaited<ReturnType<typeof prepareImage>>;
+    try {
+      img = await prepareImage(f);
+    } catch {
+      setScanState({ id, text: t('error.image') });
+      return;
+    }
+    try {
+      const label = await scanLabel({ base64: img.base64, mediaType: img.mediaType, lang: s.lang, passcode: s.passcode });
+      if (!label.readable) {
+        setScanState({ id, text: t('settings.scanFail') });
+        return;
+      }
+      const current = await db.supplements.get(id);
+      if (!current) {
+        setScanState(null);
+        return;
+      }
+      const hasValues = Object.values(current.nutrients).some((v) => (v ?? 0) > 0);
+      if (hasValues && !confirm(t('settings.scanReplace'))) {
+        setScanState(null);
+        return;
+      }
+      const nutrients = { ...current.nutrients };
+      for (const k of SUPP_KEYS) if (label.nutrients[k] !== undefined) nutrients[k] = label.nutrients[k];
+      await db.supplements.update(id, { nutrients, ...(current.name.trim() ? {} : { name: label.name.slice(0, 60) }) });
+      setCardVersion((v) => ({ ...v, [id]: (v[id] ?? 0) + 1 }));
+      setScanState({ id, text: [label.dose ? t('settings.scanDone', { dose: label.dose }) : t('settings.scanDoneNoDose'), label.notes].filter(Boolean).join(' ') });
+    } catch (err) {
+      setScanState({ id, text: t(`error.${err instanceof ApiError ? err.code : 'server'}`) });
+    }
   }
 
   const input = 'rounded-lg bg-bg px-2 py-1.5 text-right outline-none tabular-nums';
@@ -194,11 +256,57 @@ export default function Settings() {
         ))}
       </section>
 
+      <h2 className="mt-7 px-1 text-sm text-muted">{t('settings.gdm')}</h2>
+      <p className="mt-1 px-1 text-xs text-muted">{t('settings.gdmHint')}</p>
+      <section className="mt-2 divide-y divide-line rounded-3xl bg-card">
+        <Row label={t('settings.gdm')}>
+          <button type="button" role="switch" aria-checked={s.gdm.enabled} onClick={() => updateSettings({ gdm: { ...s.gdm, enabled: !s.gdm.enabled } })} className={`relative h-6 w-10 rounded-full transition-colors ${s.gdm.enabled ? 'bg-accent' : 'bg-line'}`}>
+            <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-card transition-[left] ${s.gdm.enabled ? 'left-[18px]' : 'left-0.5'}`} />
+          </button>
+        </Row>
+        {s.gdm.enabled && (
+          <>
+            <Row label={t('settings.gdmMain')}>
+              <label className="flex items-baseline gap-1">
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  value={s.gdm.mainCarbs}
+                  onChange={(e) => {
+                    if (e.target.value !== '') updateSettings({ gdm: { ...s.gdm, mainCarbs: Math.max(1, Math.round(Number(e.target.value))) } });
+                  }}
+                  onFocus={(e) => e.target.select()}
+                  className={`${input} w-20`}
+                />
+                <span className="text-xs text-muted">g</span>
+              </label>
+            </Row>
+            <Row label={t('settings.gdmSnack')}>
+              <label className="flex items-baseline gap-1">
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  value={s.gdm.snackCarbs}
+                  onChange={(e) => {
+                    if (e.target.value !== '') updateSettings({ gdm: { ...s.gdm, snackCarbs: Math.max(1, Math.round(Number(e.target.value))) } });
+                  }}
+                  onFocus={(e) => e.target.select()}
+                  className={`${input} w-20`}
+                />
+                <span className="text-xs text-muted">g</span>
+              </label>
+            </Row>
+          </>
+        )}
+      </section>
+
       <h2 className="mt-7 px-1 text-sm text-muted">{t('settings.supps')}</h2>
       <p className="mt-1 px-1 text-xs text-muted">{t('settings.suppHint')}</p>
       <section className="mt-2 space-y-2">
         {supplements.map((sp) => (
-          <div key={sp.id} className="rounded-3xl bg-card p-4">
+          <div key={`${sp.id}-${cardVersion[sp.id] ?? 0}`} className="rounded-3xl bg-card p-4">
             <div className="flex items-center gap-3">
               <input
                 type="text"
@@ -214,6 +322,10 @@ export default function Settings() {
                 <TrashIcon width={18} height={18} />
               </button>
             </div>
+            <button type="button" onClick={() => startScan(sp.id)} disabled={scanState?.busy} className="mt-3 flex items-center gap-1.5 text-sm text-accent disabled:opacity-60">
+              <CameraIcon width={16} height={16} /> {t('settings.scan')}
+            </button>
+            {scanState?.id === sp.id && <p className="mt-1 text-xs text-muted">{scanState.text}</p>}
             <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2">
               {SUPP_KEYS.map((k) => (
                 <label key={k} className="flex items-center justify-between gap-2 text-sm">
@@ -268,6 +380,7 @@ export default function Settings() {
         </button>
       </section>
       <input ref={importRef} type="file" accept="application/json,.json" onChange={(e) => void importBackup(e)} hidden />
+      <input ref={scanRef} type="file" accept="image/*" onChange={(e) => void handleScan(e)} hidden />
       {msg && <p className="mt-3 px-1 text-sm text-accent">{msg}</p>}
       <p className="mt-6 px-1 text-xs leading-relaxed text-muted">{t('settings.local')}</p>
       <p className="mt-3 px-1 text-xs leading-relaxed text-muted">{t('settings.disclaimer')}</p>

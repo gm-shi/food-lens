@@ -4,7 +4,7 @@ import { db, localDateKey } from '../lib/db';
 import { fmt } from '../lib/nutrients';
 import { setSupplementTaken, useDay, usePregnancy } from '../lib/hooks';
 import { DISPLAY_ORDER, PRIORITY, expectedGain } from '../lib/targets';
-import { useSettings } from '../lib/settings';
+import { gdmLimit, useSettings } from '../lib/settings';
 import { ApiError, suggestNext } from '../lib/api';
 import { TIPS } from '../lib/tips';
 import { useT } from '../i18n';
@@ -12,14 +12,16 @@ import MealRow from '../components/MealRow';
 import NutrientBar from '../components/NutrientBar';
 import { AlertIcon, CheckIcon, PhotoIcon, SparkIcon } from '../components/Icons';
 
-export default function Today({ onPick, onOpenSettings }: { onPick: (f: File) => void; onOpenSettings: () => void }) {
+export default function Today({ onPick, onText, onOpenSettings }: { onPick: (f: File) => void; onText: (text: string) => void; onOpenSettings: () => void }) {
   const t = useT();
-  const { lang, passcode } = useSettings();
+  const { lang, passcode, gdm } = useSettings();
   const preg = usePregnancy();
   const [today, setToday] = useState(localDateKey);
   const [showAll, setShowAll] = useState(false);
   const [suggestion, setSuggestion] = useState<{ text: string } | { error: string } | null>(null);
   const [suggesting, setSuggesting] = useState(false);
+  const [textOpen, setTextOpen] = useState(false);
+  const [text, setText] = useState('');
 
   // Keep "today" current when the app is resumed after midnight or left open.
   useEffect(() => {
@@ -74,6 +76,7 @@ export default function Today({ onPick, onOpenSettings }: { onPick: (f: File) =>
         targets,
         meals: day.meals.map((m) => m.summary || m.items.map((i) => i.name).join(', ')),
         hour: new Date().getHours(),
+        gdm: gdm.enabled ? { mainCarbs: gdmLimit(gdm, 'main'), snackCarbs: gdmLimit(gdm, 'snack') } : null,
       });
       setSuggestion({ text });
     } catch (e) {
@@ -216,8 +219,51 @@ export default function Today({ onPick, onOpenSettings }: { onPick: (f: File) =>
         >
           <PhotoIcon width={28} height={28} strokeWidth={2} />
         </button>
-        <span className="rounded-full bg-bg/80 px-3 py-1 text-xs text-muted backdrop-blur">{t('today.pick')}</span>
+        <div className="pointer-events-auto flex items-center gap-2 rounded-full bg-bg/80 px-2 text-xs text-muted backdrop-blur">
+          <button type="button" onClick={() => pickRef.current?.click()} className="px-1 py-2.5">
+            {t('today.pick')}
+          </button>
+          <span className="text-line">|</span>
+          <button type="button" onClick={() => setTextOpen(true)} className="px-1 py-2.5 text-accent">
+            {t('today.text')}
+          </button>
+        </div>
       </div>
+
+      {textOpen && (
+        <div className="fixed inset-0 z-30 flex items-end bg-ink/30" onClick={() => setTextOpen(false)}>
+          <div className="mx-auto w-full max-w-md rounded-t-3xl bg-card px-5 pt-5" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 20px)' }} onClick={(e) => e.stopPropagation()}>
+            <p className="font-medium">{t('text.title')}</p>
+            <p className="mt-0.5 text-xs text-muted">{t('text.hint')}</p>
+            <textarea
+              autoFocus
+              value={text}
+              onChange={(e) => setText(e.target.value.slice(0, 300))}
+              placeholder={t('text.placeholder')}
+              rows={3}
+              className="mt-3 w-full resize-none rounded-2xl bg-bg px-4 py-3 text-base outline-none placeholder:text-muted"
+            />
+            <div className="mt-3 flex gap-3">
+              <button type="button" onClick={() => setTextOpen(false)} className="flex-1 rounded-full border border-line py-3 font-medium">
+                {t('analyze.cancel')}
+              </button>
+              <button
+                type="button"
+                disabled={!text.trim()}
+                onClick={() => {
+                  const v = text.trim();
+                  setTextOpen(false);
+                  setText('');
+                  onText(v);
+                }}
+                className="flex-[2] rounded-full bg-accent py-3 font-medium text-on-accent disabled:opacity-40"
+              >
+                {t('text.go')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
