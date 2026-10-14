@@ -1,30 +1,39 @@
 import { useEffect, useRef, useState } from 'react';
-import { analyzePhoto, ApiError, type ApiErrorCode } from '../lib/api';
+import { analyzeMeal, ApiError, type ApiErrorCode, type MealSource } from '../lib/api';
 import { prepareImage, type PreparedImage } from '../lib/image';
 import { db, localDateKey, type FoodItem } from '../lib/db';
 import { hasSubstance, rescale, totals } from '../lib/nutrition';
-import { updateSettings, useSettings } from '../lib/settings';
+import { fmt } from '../lib/nutrients';
+import { usePregnancy } from '../lib/hooks';
+import { gdmLimit, updateSettings, useSettings } from '../lib/settings';
 import { useT } from '../i18n';
-import { MinusIcon, PlusIcon, XIcon } from '../components/Icons';
+import { AlertIcon, MinusIcon, PlusIcon, XIcon } from '../components/Icons';
+
+export type MealInput = { kind: 'photo'; file: File } | { kind: 'text'; text: string };
 
 type Phase =
   | { kind: 'preparing' }
   | { kind: 'loading' }
-  | { kind: 'result'; basis: FoodItem[]; items: FoodItem[]; summary: string; isFood: boolean }
+  | { kind: 'result'; basis: FoodItem[]; items: FoodItem[]; summary: string; isFood: boolean; warnings: string[] }
   | { kind: 'error'; code: ApiErrorCode | 'image' };
 
-export default function Analyze({ file, onClose }: { file: File; onClose: () => void }) {
+export default function Analyze({ input, onClose }: { input: MealInput; onClose: () => void }) {
   const t = useT();
-  const { lang, passcode } = useSettings();
+  const { lang, passcode, gdm } = useSettings();
+  const preg = usePregnancy();
   const [img, setImg] = useState<PreparedImage | null>(null);
   const [phase, setPhase] = useState<Phase>({ kind: 'preparing' });
   const [note, setNote] = useState('');
   const [noteOpen, setNoteOpen] = useState(false);
+  const [mealKind, setMealKind] = useState<'main' | 'snack'>('main');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(false);
   const alive = useRef(true);
   const passcodeRef = useRef(passcode);
   passcodeRef.current = passcode;
+  const trimesterRef = useRef(preg.week === null ? null : preg.trimester);
+  trimesterRef.current = preg.week === null ? null : preg.trimester;
+  const sourceRef = useRef<MealSource | null>(input.kind === 'text' ? { kind: 'text', text: input.text } : null);
 
   useEffect(() => {
     alive.current = true;
@@ -33,12 +42,14 @@ export default function Analyze({ file, onClose }: { file: File; onClose: () => 
     };
   }, []);
 
-  async function run(prepared: PreparedImage, userNote: string) {
+  async function run(userNote: string) {
+    const source = sourceRef.current;
+    if (!source) return;
     setPhase({ kind: 'loading' });
     try {
-      const a = await analyzePhoto({ base64: prepared.base64, mediaType: prepared.mediaType, lang, note: userNote, passcode: passcodeRef.current });
+      const a = await analyzeMeal({ source, lang, note: userNote, passcode: passcodeRef.current, trimester: trimesterRef.current });
       if (!alive.current) return;
-      setPhase({ kind: 'result', basis: a.items, items: a.items, summary: a.summary, isFood: a.is_food });
+      setPhase({ kind: 'result', basis: a.items, items: a.items, summary: a.summary, isFood: a.is_food, warnings: a.warnings });
     } catch (e) {
       if (!alive.current) return;
       setPhase({ kind: 'error', code: e instanceof ApiError ? e.code : 'server' });
@@ -47,11 +58,17 @@ export default function Analyze({ file, onClose }: { file: File; onClose: () => 
 
   useEffect(() => {
     let cancelled = false;
-    prepareImage(file)
+    if (input.kind === 'text') {
+      // Deferred so the StrictMode cleanup can cancel the duplicate run.
+      const id = setTimeout(() => void run(''), 0);
+      return () => clearTimeout(id);
+    }
+    prepareImage(input.file)
       .then((p) => {
         if (cancelled) return;
         setImg(p);
-        void run(p, '');
+        sourceRef.current = { kind: 'photo', base64: p.base64, mediaType: p.mediaType };
+        void run('');
       })
       .catch(() => {
         if (!cancelled) setPhase({ kind: 'error', code: 'image' });
@@ -59,7 +76,7 @@ export default function Analyze({ file, onClose }: { file: File; onClose: () => 
     return () => {
       cancelled = true;
     };
-  }, [file]);
+  }, [input]);
 
   function setGrams(idx: number, grams: number) {
     if (phase.kind !== 'result') return;
@@ -73,12 +90,22 @@ export default function Analyze({ file, onClose }: { file: File; onClose: () => 
   }
 
   async function save() {
-    if (phase.kind !== 'result' || !img || saving) return;
+    if (phase.kind !== 'result' || saving) return;
     setSaving(true);
     setSaveError(false);
     try {
       const items = phase.items.filter(hasSubstance);
-      await db.meals.add({ date: localDateKey(), ts: Date.now(), thumb: img.thumb, summary: phase.summary, note: note.trim(), items });
+      await db.meals.add({
+        date: localDateKey(),
+        ts: Date.now(),
+        thumb: img?.thumb ?? '',
+        summary: phase.summary,
+        note: note.trim(),
+        items,
+        warnings: phase.warnings,
+        kind: gdm.enabled ? mealKind : undefined,
+        source: input.kind,
+      });
       onClose();
     } catch {
       if (alive.current) setSaveError(true);
@@ -90,6 +117,9 @@ export default function Analyze({ file, onClose }: { file: File; onClose: () => 
   const tot = phase.kind === 'result' ? totals(phase.items) : null;
   const canSave = phase.kind === 'result' && phase.items.some(hasSubstance);
   const showSummary = phase.kind === 'result' && phase.summary && !(phase.items.length === 1 && phase.items[0].name === phase.summary);
+  const canRetry = phase.kind === 'error' && phase.code !== 'image' && (input.kind === 'text' || img !== null);
+  const carbLimit = gdm.enabled ? gdmLimit(gdm, mealKind) : null;
+  const carbOver = tot !== null && carbLimit !== null && tot.carbs > carbLimit;
 
   return (
     <div className="mx-auto flex min-h-dvh max-w-md flex-col" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
@@ -102,9 +132,16 @@ export default function Analyze({ file, onClose }: { file: File; onClose: () => 
       </header>
 
       <div className="px-4">
-        <div className="overflow-hidden rounded-3xl bg-line" style={{ aspectRatio: '4 / 3' }}>
-          {img && <img src={img.preview} alt="" className="h-full w-full object-cover" />}
-        </div>
+        {input.kind === 'photo' ? (
+          <div className="overflow-hidden rounded-3xl bg-line" style={{ aspectRatio: '4 / 3' }}>
+            {img && <img src={img.preview} alt="" className="h-full w-full object-cover" />}
+          </div>
+        ) : (
+          <div className="rounded-3xl bg-card px-5 py-4">
+            <p className="text-xs text-muted">{t('analyze.fromText')}</p>
+            <p className="mt-1 text-lg leading-relaxed">{input.text}</p>
+          </div>
+        )}
       </div>
 
       <main className="flex-1 px-4 pt-4" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 144px)' }}>
@@ -131,8 +168,8 @@ export default function Analyze({ file, onClose }: { file: File; onClose: () => 
                 className="mx-auto mt-4 block w-48 rounded-2xl bg-card px-4 py-2.5 text-center outline-none placeholder:text-muted"
               />
             )}
-            {img && phase.code !== 'image' && (
-              <button type="button" onClick={() => void run(img, note.trim())} className="mt-4 rounded-full bg-accent-soft px-5 py-2.5 text-sm text-accent">
+            {canRetry && (
+              <button type="button" onClick={() => void run(note.trim())} className="mt-4 rounded-full bg-accent-soft px-5 py-2.5 text-sm text-accent">
                 {t('analyze.retry')}
               </button>
             )}
@@ -142,7 +179,7 @@ export default function Analyze({ file, onClose }: { file: File; onClose: () => 
         {phase.kind === 'result' && (
           <>
             {!phase.isFood || phase.items.length === 0 ? (
-              <p className="py-8 text-center font-medium">{t('analyze.notFood')}</p>
+              <p className="py-8 text-center font-medium">{t(input.kind === 'text' ? 'analyze.notFoodText' : 'analyze.notFood')}</p>
             ) : (
               <>
                 {showSummary && <p className="text-lg font-medium">{phase.summary}</p>}
@@ -156,7 +193,7 @@ export default function Analyze({ file, onClose }: { file: File; onClose: () => 
                           {it.confidence === 'low' && <p className="text-xs text-muted">{t('analyze.rough')}</p>}
                         </div>
                         <p className="shrink-0 tabular-nums">
-                          {it.calories} <span className="text-xs text-muted">{t('kcal')}</span>
+                          {fmt('energy', it.energy)} <span className="text-xs text-muted">{t('kcal')}</span>
                         </p>
                       </div>
                       <div className="mt-2 flex items-center justify-between">
@@ -189,15 +226,46 @@ export default function Analyze({ file, onClose }: { file: File; onClose: () => 
                   ))}
                 </ul>
                 {tot && (
-                  <div className="mt-3 flex items-baseline justify-between px-1">
-                    <span className="text-sm text-muted">
-                      {t('protein')} {tot.protein}{t('g')} · {t('carbs')} {tot.carbs}{t('g')} · {t('fat')} {tot.fat}{t('g')}
-                    </span>
-                    <span className="tabular-nums">
-                      <span className="text-sm text-muted">{t('analyze.total')} </span>
-                      <span className="text-xl font-semibold">{tot.calories}</span>
-                      <span className="text-sm text-muted"> {t('kcal')}</span>
-                    </span>
+                  <div className="mt-3 px-1">
+                    <div className="flex items-baseline justify-between">
+                      <span className="text-sm text-muted">{t('analyze.total')}</span>
+                      <span className="tabular-nums">
+                        <span className="text-xl font-semibold">{fmt('energy', tot.energy)}</span>
+                        <span className="text-sm text-muted"> {t('kcal')}</span>
+                      </span>
+                    </div>
+                    <p className="mt-1 text-xs text-muted">
+                      {t('n.protein')} {fmt('protein', tot.protein)}g · {t('n.fiber')} {fmt('fiber', tot.fiber)}g · {t('n.iron')} {fmt('iron', tot.iron)}mg · {t('n.calcium')} {fmt('calcium', tot.calcium)}mg · {t('n.folate')} {fmt('folate', tot.folate)}µg
+                    </p>
+                  </div>
+                )}
+                {gdm.enabled && tot && carbLimit !== null && (
+                  <div className="mt-4 rounded-2xl bg-card px-4 py-3">
+                    <div className="flex items-baseline justify-between gap-3">
+                      <span className="text-sm text-muted">
+                        {t('analyze.carbs')} · {t(mealKind === 'snack' ? 'analyze.snack' : 'analyze.main')}
+                      </span>
+                      <p className={`whitespace-nowrap tabular-nums ${carbOver ? 'text-warn' : ''}`}>
+                        <span className="text-lg font-semibold">{fmt('carbs', tot.carbs)}</span>
+                        <span className="text-xs text-muted"> / {carbLimit} g</span>
+                      </p>
+                    </div>
+                    <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-line">
+                      <div className={`h-full rounded-full ${carbOver ? 'bg-warn' : 'bg-accent'}`} style={{ width: `${Math.min(100, (tot.carbs / carbLimit) * 100)}%` }} />
+                    </div>
+                    {carbOver && <p className="mt-1.5 text-xs text-warn">{t('analyze.carbOver')}</p>}
+                  </div>
+                )}
+                {phase.warnings.length > 0 && (
+                  <div className="mt-4 rounded-2xl bg-warn/10 px-4 py-3">
+                    <p className="flex items-center gap-1.5 text-sm font-medium text-warn">
+                      <AlertIcon width={16} height={16} /> {t('analyze.safety')}
+                    </p>
+                    <ul className="mt-1 space-y-1 text-sm">
+                      {phase.warnings.map((w, i) => (
+                        <li key={i}>{w}</li>
+                      ))}
+                    </ul>
                   </div>
                 )}
               </>
@@ -217,12 +285,7 @@ export default function Analyze({ file, onClose }: { file: File; onClose: () => 
                     rows={2}
                     className="w-full resize-none bg-transparent text-base outline-none placeholder:text-muted"
                   />
-                  <button
-                    type="button"
-                    disabled={!note.trim() || !img}
-                    onClick={() => img && void run(img, note.trim())}
-                    className="mt-2 rounded-full bg-accent-soft px-4 py-2 text-sm text-accent disabled:opacity-40"
-                  >
+                  <button type="button" disabled={!note.trim()} onClick={() => void run(note.trim())} className="mt-2 rounded-full bg-accent-soft px-4 py-2 text-sm text-accent disabled:opacity-40">
                     {t('analyze.redo')}
                   </button>
                 </div>
@@ -236,6 +299,17 @@ export default function Analyze({ file, onClose }: { file: File; onClose: () => 
         <div className="fixed inset-x-0 bottom-0 z-10 border-t border-line bg-bg/90 backdrop-blur" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
           <div className="mx-auto max-w-md">
             {saveError && <p className="px-4 pt-3 text-center text-sm text-warn">{t('error.save')}</p>}
+            {gdm.enabled && (
+              <div className="flex justify-center px-4 pt-3">
+                <div className="flex shrink-0 rounded-full bg-card p-0.5 text-sm">
+                  {(['main', 'snack'] as const).map((k) => (
+                    <button key={k} type="button" onClick={() => setMealKind(k)} className={`whitespace-nowrap rounded-full px-4 py-1.5 ${mealKind === k ? 'bg-accent-soft font-medium text-accent' : 'text-muted'}`}>
+                      {t(k === 'main' ? 'analyze.main' : 'analyze.snack')}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             <div className="flex gap-3 p-4">
               <button type="button" onClick={onClose} className="flex-1 rounded-full border border-line py-3 font-medium">
                 {t('analyze.cancel')}

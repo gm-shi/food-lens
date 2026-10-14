@@ -1,10 +1,13 @@
 import type { Lang } from '../i18n';
 import type { Confidence, FoodItem } from './db';
+import { NUTRIENT_KEYS, roundNutrient, type Nutrients } from './nutrients';
+import type { Trimester } from './targets';
 
 export interface Analysis {
   is_food: boolean;
   summary: string;
   items: FoodItem[];
+  warnings: string[];
 }
 
 export type ApiErrorCode = 'config' | 'passcode' | 'network' | 'server' | 'refused' | 'rate_limited';
@@ -21,24 +24,16 @@ const WORKER_URL = ((import.meta.env.VITE_WORKER_URL as string | undefined) ?? '
 /** HTTP header values must be printable ASCII; anything else can never match the Worker's passcode. */
 const ASCII = /^[\x20-\x7e]+$/;
 
-export interface AnalyzeInput {
-  base64: string;
-  mediaType: string;
-  lang: Lang;
-  note: string;
-  passcode: string;
-}
-
-export async function analyzePhoto(input: AnalyzeInput): Promise<Analysis> {
+async function post(path: string, passcode: string, body: unknown): Promise<unknown> {
   if (!WORKER_URL) throw new ApiError('config');
-  const passcode = input.passcode.trim();
-  if (!ASCII.test(passcode)) throw new ApiError('passcode');
+  const code = passcode.trim();
+  if (!ASCII.test(code)) throw new ApiError('passcode');
   let res: Response;
   try {
-    res = await fetch(`${WORKER_URL}/analyze`, {
+    res = await fetch(`${WORKER_URL}${path}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-app-passcode': passcode },
-      body: JSON.stringify({ image: input.base64, mediaType: input.mediaType, lang: input.lang, note: input.note }),
+      headers: { 'content-type': 'application/json', 'x-app-passcode': code },
+      body: JSON.stringify(body),
     });
   } catch {
     throw new ApiError('network');
@@ -47,38 +42,102 @@ export async function analyzePhoto(input: AnalyzeInput): Promise<Analysis> {
   if (res.status === 429) throw new ApiError('rate_limited');
   if (res.status === 422) throw new ApiError('refused');
   if (!res.ok) throw new ApiError('server', `HTTP ${res.status}`);
-  let data: unknown;
   try {
-    data = await res.json();
+    return await res.json();
   } catch {
     throw new ApiError('server', 'bad json');
   }
-  return sanitize((data as { result?: unknown }).result);
+}
+
+export type MealSource = { kind: 'photo'; base64: string; mediaType: string } | { kind: 'text'; text: string };
+
+export interface AnalyzeInput {
+  source: MealSource;
+  lang: Lang;
+  note: string;
+  passcode: string;
+  trimester: Trimester | null;
+}
+
+export async function analyzeMeal(input: AnalyzeInput): Promise<Analysis> {
+  const body: Record<string, unknown> = { lang: input.lang, note: input.note, trimester: input.trimester };
+  if (input.source.kind === 'photo') {
+    body.image = input.source.base64;
+    body.mediaType = input.source.mediaType;
+  } else {
+    body.text = input.source.text;
+  }
+  const data = (await post('/analyze', input.passcode, body)) as { result?: unknown };
+  return sanitize(data.result);
+}
+
+export interface LabelResult {
+  readable: boolean;
+  name: string;
+  dose: string;
+  notes: string;
+  nutrients: Partial<Nutrients>;
+}
+
+/** Read a supplement or food label photo into per-daily-dose nutrient amounts. */
+export async function scanLabel(input: { base64: string; mediaType: string; lang: Lang; passcode: string }): Promise<LabelResult> {
+  const data = (await post('/label', input.passcode, { image: input.base64, mediaType: input.mediaType, lang: input.lang })) as { label?: unknown };
+  const r = (data.label && typeof data.label === 'object' ? data.label : {}) as Record<string, unknown>;
+  const nutrients: Partial<Nutrients> = {};
+  for (const k of NUTRIENT_KEYS) {
+    const v = roundNutrient(k, num(r[k]));
+    if (v > 0) nutrients[k] = v;
+  }
+  return {
+    readable: r.readable !== false && Object.keys(nutrients).length > 0,
+    name: String(r.name ?? '').slice(0, 60),
+    dose: String(r.dose ?? '').slice(0, 60),
+    notes: String(r.notes ?? '').slice(0, 200),
+    nutrients,
+  };
+}
+
+export interface SuggestInput {
+  lang: Lang;
+  passcode: string;
+  week: number | null;
+  trimester: Trimester | null;
+  totals: Nutrients;
+  targets: Partial<Record<keyof Nutrients, number>>;
+  meals: string[];
+  hour: number;
+  gdm: { mainCarbs: number; snackCarbs: number } | null;
+}
+
+export async function suggestNext(input: SuggestInput): Promise<string> {
+  const { passcode, ...rest } = input;
+  const data = (await post('/suggest', passcode, rest)) as { suggestion?: unknown };
+  return String(data.suggestion ?? '').slice(0, 400);
 }
 
 function num(v: unknown): number {
   const n = typeof v === 'number' ? v : Number(v);
-  return Number.isFinite(n) && n >= 0 ? Math.round(n) : 0;
+  return Number.isFinite(n) && n >= 0 ? n : 0;
 }
 
-/** Coerce an untrusted object (model output or imported backup) into a well-formed FoodItem. */
+/** Coerce an untrusted object (model output, old record or imported backup) into a well-formed FoodItem. */
 export function cleanItem(x: unknown): FoodItem {
   const o = (x && typeof x === 'object' ? x : {}) as Record<string, unknown>;
   const conf = o.confidence;
-  return {
+  const item = {
     name: String(o.name ?? '').slice(0, 60) || '?',
-    grams: num(o.grams),
-    calories: num(o.calories),
-    protein: num(o.protein),
-    carbs: num(o.carbs),
-    fat: num(o.fat),
+    grams: Math.round(num(o.grams)),
     confidence: (conf === 'low' || conf === 'medium' || conf === 'high' ? conf : 'medium') as Confidence,
-  };
+  } as FoodItem;
+  for (const k of NUTRIENT_KEYS) item[k] = roundNutrient(k, num(o[k]));
+  if (!item.energy && typeof o.calories === 'number') item.energy = roundNutrient('energy', num(o.calories));
+  return item;
 }
 
 function sanitize(raw: unknown): Analysis {
   const r = (raw ?? {}) as Record<string, unknown>;
   const list = Array.isArray(r.items) ? r.items.slice(0, 20) : [];
   const items = list.map(cleanItem);
-  return { is_food: Boolean(r.is_food) && items.length > 0, summary: String(r.summary ?? '').slice(0, 120), items };
+  const warnings = Array.isArray(r.warnings) ? r.warnings.filter((w): w is string => typeof w === 'string').map((w) => w.slice(0, 200)).slice(0, 4) : [];
+  return { is_food: Boolean(r.is_food) && items.length > 0, summary: String(r.summary ?? '').slice(0, 120), items, warnings };
 }

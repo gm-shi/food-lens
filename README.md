@@ -1,6 +1,8 @@
 # 食记 · Food Lens
 
-A small, calm diet diary for a few people. Snap a photo of your food, get an estimate of calories, protein, carbs and fat, adjust the grams, save. Everything is stored on the phone; nothing is logged anywhere else.
+A small, calm pregnancy food diary for a few people in New South Wales, Australia. Pick a photo of your meal, or describe it in a sentence, and get an estimate of energy and 13 nutrients; adjust the grams, save, or log a past meal again with one tap. The home screen shows today's intake against Australian pregnancy targets, your supplements (set up by photographing the label), any food-safety notes for what you ate, and a one-line suggestion for what to eat next. A weight tab tracks gain against the recommended range. An optional gestational-diabetes mode shows carbohydrate per meal against the limits your dietitian gives you. Everything is stored on the phone; nothing is logged anywhere else. Chinese and English.
+
+**Not medical advice.** Targets are the population reference values for pregnancy; a doctor or midwife may set different ones, and every target is editable in Settings. Micronutrients estimated from photos are rough; the weekly trend is what matters.
 
 - **App**: Vite + React PWA, hosted on GitHub Pages. Data lives in the phone's IndexedDB with JSON export/import.
 - **Worker**: a tiny Cloudflare Worker that holds the Anthropic API key and forwards one photo per request to Claude. Access is gated by a shared passcode.
@@ -24,11 +26,32 @@ Share the site URL and the passcode with your users. On the phone, open the site
 ```bash
 npm install && (cd worker && npm install)
 (cd worker && npm run dev)   # Worker on http://localhost:8787, reads worker/.dev.vars
-npm run dev                  # App on http://localhost:5173
+npm run dev                  # App on http://localhost:5174/food-lens/
 ```
 
 `npm run build` type-checks and builds the app. `cd worker && npm run typecheck` checks the Worker.
 
+Upgrading: deploy the Worker first (`cd worker && npm run deploy`), then push to `main`. The Worker keeps a `calories` alias in its response so an older app build keeps working during the switch.
+
+## Reference values
+
+Targets come from the Australian sources below and live in `src/lib/nrv.ts`; the Worker's food-safety notes follow NSW Health and FSANZ pregnancy advice.
+
+- NHMRC Nutrient Reference Values for Australia and New Zealand, pregnancy 19-50 y (eatforhealth.gov.au/nutrient-reference-values/nutrients/…): protein 60 g (46 g in trimester 1), fibre 28 g, calcium 1000 mg, iron 27 mg, folate 600 µg DFE, vitamin C 60 mg, vitamin A 800 µg RE, iodine 220 µg, vitamin D 5 µg, long-chain omega-3 115 mg; energy from Schofield BMR on pre-pregnancy weight × physical activity level, plus 1.4 MJ/day in trimester 2 and 1.9 MJ/day in trimester 3.
+- Australian Pregnancy Care Guidelines (weight and BMI chapter, after IOM 2009) and NSW Health: gestational weight gain by pre-pregnancy BMI, 0.5-2 kg in the first trimester.
+- NSW Health and Eat for Health "Healthy eating during your pregnancy": caffeine 200 mg/day or less, food-group advice.
+- Food Standards Australia New Zealand (foodstandards.gov.au/consumer/safety/listeria and the mercury-in-fish advice) and the NSW Health listeriosis fact sheet: the foods behind the safety notes.
+
+All values were checked against those pages on 2026-10-14.
+
+## Worker routes
+
+- `POST /analyze` — a photo (`image`, `mediaType`) or a text description (`text`), plus `lang`, `note`, `trimester` → items with 14 nutrients, a summary and pregnancy safety notes.
+- `POST /label` — a photo of a supplement or food label → per-daily-dose amounts, name and dose.
+- `POST /suggest` — today's totals, targets and meals (and gestational-diabetes limits if on) → one or two sentences.
+
+All routes need the `x-app-passcode` header and an allowed `Origin`.
+
 ## Costs
 
-Roughly 2,000 input and 400 output tokens per photo. With Claude Sonnet 5.5 that is well under $0.01 per photo. The model and effort are set in `worker/wrangler.toml`.
+Roughly 2,800 input and 800 output tokens per photo (14 nutrients per item), and about 700 / 130 for a suggestion. With Claude Sonnet 5.5 that is around $0.01 per photo. The model and effort are set in `worker/wrangler.toml`.
