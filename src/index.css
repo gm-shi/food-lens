@@ -1,0 +1,50 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #faf9f5;
+  --color-card: #ffffff;
+  --color-ink: #1f1f1d;
+  --color-muted: #6b6b65;
+  --color-line: #e9e8e2;
+  --color-accent: #4f7f52;
+  --color-accent-soft: #e7efe7;
+  --color-on-accent: #ffffff;
+  --color-warn: #c25b3f;
+  --font-sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", "Noto Sans SC", "Segoe UI", sans-serif;
+}
+
+/* Dark mode: unlayered on purpose so it wins over the @theme defaults. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #151614;
+    --color-card: #1f201d;
+    --color-ink: #f1f0ea;
+    --color-muted: #9b9b93;
+    --color-line: #2f302c;
+    --color-accent: #7fb382;
+    --color-accent-soft: #233227;
+    --color-on-accent: #151614;
+    --color-warn: #e0826a;
+  }
+}
+
+@layer base {
+  html,
+  body {
+    background: var(--color-bg);
+    color: var(--color-ink);
+  }
+
+  body {
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    touch-action: manipulation;
+    overscroll-behavior-y: none;
+  }
+
+  input[type="number"]::-webkit-outer-spin-button,
+  input[type="number"]::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+}

@@ -1,0 +1,12 @@
+# secrets — never commit
+.dev.vars
+.dev.vars*
+.env.local
+.env.*.local
+
+# build / deps
+node_modules/
+dist/
+dev-dist/
+.wrangler/
+.DS_Store

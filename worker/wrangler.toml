@@ -1,0 +1,19 @@
+name = "food-lens"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Serve on the workers.dev subdomain; no separate preview hostnames.
+workers_dev = true
+preview_urls = false
+
+# Keep the Worker's own console.error lines (status codes only, never photos) visible in the dashboard.
+[observability]
+enabled = true
+
+# Non-secret config. Secrets (ANTHROPIC_API_KEY, APP_PASSCODE) come from
+# `.dev.vars` locally and from `wrangler secret bulk .dev.vars` in production.
+[vars]
+ALLOWED_ORIGINS = "https://gm-shi.github.io,http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173"
+MODEL = "claude-sonnet-5-5"
+EFFORT = "medium"
