@@ -5,9 +5,9 @@ import { fmt } from '../lib/nutrients';
 import { timeLabel } from '../lib/date';
 import { gdmLimit, useSettings } from '../lib/settings';
 import { useT } from '../i18n';
-import { AlertIcon, PlusIcon, TrashIcon } from './Icons';
+import { AlertIcon, EditIcon, PlusIcon, TrashIcon } from './Icons';
 
-export default function MealRow({ meal }: { meal: Meal }) {
+export default function MealRow({ meal, onEdit }: { meal: Meal; onEdit?: (meal: Meal) => void }) {
   const t = useT();
   const { lang, gdm } = useSettings();
   const [open, setOpen] = useState(false);
@@ -82,7 +82,12 @@ export default function MealRow({ meal }: { meal: Meal }) {
               ))}
             </div>
           )}
-          <div className="mt-3 flex items-center gap-5">
+          <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1">
+            {onEdit && (
+              <button type="button" onClick={() => onEdit(meal)} className="flex items-center gap-1.5 py-1 text-sm text-accent">
+                <EditIcon width={16} height={16} /> {t('meal.edit')}
+              </button>
+            )}
             <button type="button" onClick={() => void again()} disabled={added} className="flex items-center gap-1.5 py-1 text-sm text-accent disabled:opacity-70">
               <PlusIcon width={16} height={16} /> {added ? t('meal.added') : t('meal.again')}
             </button>

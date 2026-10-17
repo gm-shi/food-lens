@@ -1,6 +1,6 @@
 # 食记 · Food Lens
 
-A small, calm pregnancy food diary for a few people in New South Wales, Australia. Pick a photo of your meal, or describe it in a sentence, and get an estimate of energy and 13 nutrients; adjust the grams, save, or log a past meal again with one tap. The home screen shows today's intake against Australian pregnancy targets, your supplements (set up by photographing the label), any food-safety notes for what you ate, and a one-line suggestion for what to eat next. A weight tab tracks gain against the recommended range. An optional gestational-diabetes mode shows carbohydrate per meal against the limits your dietitian gives you. Everything is stored on the phone; nothing is logged anywhere else. Chinese and English.
+A small, calm pregnancy food diary for a few people in New South Wales, Australia. Pick a photo of your meal, or describe it in a sentence, and get an estimate of energy and 13 nutrients. If something was recognised wrongly, tap the name to correct it (nutrients are re-estimated for the new name), add a missing item, adjust the grams, and edit a saved meal later. The home screen shows today's intake against Australian pregnancy targets, a daily "how I feel" note, your supplements (set up by photographing the label), any food-safety notes for what you ate, and three daily food ideas picked from your week's gaps and how you feel. History has a month calendar to jump to any day. A weight tab tracks gain against the recommended range. An optional gestational-diabetes mode shows carbohydrate per meal against the limits your dietitian gives you. Everything is stored on the phone; nothing is logged anywhere else. Chinese and English.
 
 **Not medical advice.** Targets are the population reference values for pregnancy; a doctor or midwife may set different ones, and every target is editable in Settings. Micronutrients estimated from photos are rough; the weekly trend is what matters.
 
@@ -48,10 +48,11 @@ All values were checked against those pages on 2026-10-14.
 
 - `POST /analyze` — a photo (`image`, `mediaType`) or a text description (`text`), plus `lang`, `note`, `trimester` → items with 14 nutrients, a summary and pregnancy safety notes.
 - `POST /label` — a photo of a supplement or food label → per-daily-dose amounts, name and dose.
-- `POST /suggest` — today's totals, targets and meals (and gestational-diabetes limits if on) → one or two sentences.
+- `POST /item` — one food name and a weight → that item's nutrients (used when correcting or adding an item).
+- `POST /recommend` — 7-day averages, today's totals, targets, meals, mood and gestational-diabetes limits → three food ideas with reasons. Fetched once a day per phone and cached.
 
 All routes need the `x-app-passcode` header and an allowed `Origin`.
 
 ## Costs
 
-Roughly 2,800 input and 800 output tokens per photo (14 nutrients per item), and about 700 / 130 for a suggestion. With Claude Sonnet 5.5 that is around $0.01 per photo. The model and effort are set in `worker/wrangler.toml`.
+Roughly 2,800 input and 800 output tokens per photo (14 nutrients per item), about 1,100 / 130 for an item correction, and about 1,500 / 230 for the daily recommendations. With Claude Sonnet 5.5 that is around $0.01 per photo and well under $0.01 per day for the rest. The model and effort are set in `worker/wrangler.toml`.

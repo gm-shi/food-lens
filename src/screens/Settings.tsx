@@ -1,8 +1,9 @@
 import { useRef, useState, type ChangeEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db, type Meal, type Supplement, type SupplementLog, type WeightEntry } from '../lib/db';
+import { db, type Meal, type Note, type Supplement, type SupplementLog, type WeightEntry } from '../lib/db';
 import { ApiError, cleanItem, scanLabel } from '../lib/api';
 import { prepareImage } from '../lib/image';
+import { clearRecs } from '../lib/recs';
 import { CameraIcon } from '../components/Icons';
 import { NUTRIENTS, type NutrientKey } from '../lib/nutrients';
 import { usePregnancy } from '../lib/hooks';
@@ -21,6 +22,9 @@ interface Backup {
   profile?: Profile | null;
   overrides?: Partial<Record<NutrientKey, number>>;
   gdm?: Gdm;
+  /** v3 backups: one note per day */
+  dayNotes?: { date: string; mood: number; text: string; ts: number }[];
+  notes?: Omit<Note, 'id'>[];
 }
 
 const SUPP_KEYS: NutrientKey[] = ['folate', 'iodine', 'iron', 'calcium', 'vitD', 'dha', 'vitC', 'vitA'];
@@ -55,6 +59,7 @@ export default function Settings() {
       profile: s.profile,
       overrides: s.overrides,
       gdm: s.gdm,
+      notes: (await db.notes.orderBy('ts').toArray()).map(({ id: _id, ...rest }) => rest),
     };
     const blob = new Blob([JSON.stringify(backup)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -75,7 +80,7 @@ export default function Settings() {
       const data = JSON.parse(await f.text()) as Partial<Backup>;
       if (data.app !== 'food-lens' || !Array.isArray(data.meals)) throw new Error('bad');
       let added = 0;
-      await db.transaction('rw', db.meals, db.weights, db.supplements, db.supplementLogs, async () => {
+      await db.transaction('rw', db.meals, db.weights, db.supplements, db.supplementLogs, db.notes, async () => {
         const have = new Set<number>((await db.meals.orderBy('ts').keys()) as number[]);
         const fresh: Omit<Meal, 'id'>[] = [];
         for (const m of data.meals ?? []) {
@@ -108,6 +113,15 @@ export default function Settings() {
           const match = existing.find((x) => x.name === sp.name);
           if (match) idMap.set(sp.id, match.id);
           else idMap.set(sp.id, (await db.supplements.add({ name: sp.name.slice(0, 60), enabled: sp.enabled !== false, nutrients: cleanNutrients(sp.nutrients) })) as number);
+        }
+        const haveNotes = new Set((await db.notes.toArray()).map((n) => `${n.date}|${n.ts}`));
+        for (const n of [...(data.notes ?? []), ...(data.dayNotes ?? [])]) {
+          if (!n || typeof n.date !== 'string' || typeof n.mood !== 'number' || n.mood < 1 || n.mood > 5) continue;
+          const ts = typeof n.ts === 'number' ? n.ts : Date.parse(n.date);
+          if (haveNotes.has(`${n.date}|${ts}`)) continue;
+          haveNotes.add(`${n.date}|${ts}`);
+          await db.notes.add({ date: n.date, ts, mood: Math.round(n.mood) as Note['mood'], text: typeof n.text === 'string' ? n.text.slice(0, 200) : '' });
+          added++;
         }
         const logs = (data.supplementLogs ?? []).filter((l) => l && typeof l.date === 'string' && idMap.has(l.supplementId));
         for (const l of logs) {
@@ -147,11 +161,13 @@ export default function Settings() {
 
   async function clearAll() {
     if (!confirm(t('settings.clearConfirm'))) return;
-    await db.transaction('rw', db.meals, db.weights, db.supplementLogs, async () => {
+    await db.transaction('rw', db.meals, db.weights, db.supplementLogs, db.notes, async () => {
       await db.meals.clear();
       await db.weights.clear();
       await db.supplementLogs.clear();
+      await db.notes.clear();
     });
+    clearRecs();
   }
 
   async function addSupplement() {

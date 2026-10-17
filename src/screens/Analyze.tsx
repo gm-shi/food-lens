@@ -1,15 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
-import { analyzeMeal, ApiError, type ApiErrorCode, type MealSource } from '../lib/api';
+import { analyzeMeal, ApiError, estimateItem, type ApiErrorCode, type MealSource } from '../lib/api';
 import { prepareImage, type PreparedImage } from '../lib/image';
-import { db, localDateKey, type FoodItem } from '../lib/db';
+import { db, localDateKey, type FoodItem, type Meal } from '../lib/db';
 import { hasSubstance, rescale, totals } from '../lib/nutrition';
 import { fmt } from '../lib/nutrients';
 import { usePregnancy } from '../lib/hooks';
 import { gdmLimit, updateSettings, useSettings } from '../lib/settings';
 import { useT } from '../i18n';
+import { dayLabel, timeLabel } from '../lib/date';
 import { AlertIcon, MinusIcon, PlusIcon, XIcon } from '../components/Icons';
 
-export type MealInput = { kind: 'photo'; file: File } | { kind: 'text'; text: string };
+export type MealInput = { kind: 'photo'; file: File } | { kind: 'text'; text: string } | { kind: 'edit'; meal: Meal };
 
 type Phase =
   | { kind: 'preparing' }
@@ -21,13 +22,20 @@ export default function Analyze({ input, onClose }: { input: MealInput; onClose:
   const t = useT();
   const { lang, passcode, gdm } = useSettings();
   const preg = usePregnancy();
+  const editing = input.kind === 'edit' ? input.meal : null;
   const [img, setImg] = useState<PreparedImage | null>(null);
-  const [phase, setPhase] = useState<Phase>({ kind: 'preparing' });
-  const [note, setNote] = useState('');
+  const [phase, setPhase] = useState<Phase>(() =>
+    editing ? { kind: 'result', basis: editing.items, items: editing.items, summary: editing.summary, isFood: editing.items.length > 0, warnings: editing.warnings ?? [] } : { kind: 'preparing' },
+  );
+  const [note, setNote] = useState(editing?.note ?? '');
   const [noteOpen, setNoteOpen] = useState(false);
-  const [mealKind, setMealKind] = useState<'main' | 'snack'>('main');
+  const [mealKind, setMealKind] = useState<'main' | 'snack'>(editing?.kind === 'snack' ? 'snack' : 'main');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(false);
+  const [renaming, setRenaming] = useState<{ idx: number; value: string } | null>(null);
+  const [busy, setBusy] = useState<Set<number>>(new Set());
+  const [itemError, setItemError] = useState<{ idx: number; text: string } | null>(null);
+  const [adding, setAdding] = useState<{ value: string; busy: boolean; error: string } | null>(null);
   const alive = useRef(true);
   const passcodeRef = useRef(passcode);
   passcodeRef.current = passcode;
@@ -58,6 +66,7 @@ export default function Analyze({ input, onClose }: { input: MealInput; onClose:
 
   useEffect(() => {
     let cancelled = false;
+    if (input.kind === 'edit') return;
     if (input.kind === 'text') {
       // Deferred so the StrictMode cleanup can cancel the duplicate run.
       const id = setTimeout(() => void run(''), 0);
@@ -89,23 +98,90 @@ export default function Analyze({ input, onClose }: { input: MealInput; onClose:
     setPhase({ ...phase, items: phase.items.filter((_, i) => i !== idx), basis: phase.basis.filter((_, i) => i !== idx) });
   }
 
+  function markBusy(idx: number, on: boolean) {
+    setBusy((b) => {
+      const n = new Set(b);
+      if (on) n.add(idx);
+      else n.delete(idx);
+      return n;
+    });
+  }
+
+  /** Rename an item and re-estimate its nutrients for the new name at the current weight. */
+  async function commitRename() {
+    if (!renaming || phase.kind !== 'result') return;
+    const { idx, value } = renaming;
+    setRenaming(null);
+    const name = value.trim().slice(0, 60);
+    const current = phase.items[idx];
+    if (!name || !current || name === current.name) return;
+    markBusy(idx, true);
+    setItemError(null);
+    try {
+      const { item: est, warning } = await estimateItem({ name, grams: current.grams || 100, lang, passcode: passcodeRef.current });
+      if (!alive.current) return;
+      const base = current.grams > 0 && est.grams > 0 && est.grams !== current.grams ? rescale(est, current.grams) : est;
+      const item = { ...base, name, grams: current.grams || est.grams };
+      setPhase((p) => {
+        if (p.kind !== 'result') return p;
+        const old = p.items[idx];
+        const grams = old?.grams ?? item.grams;
+        const scaled = grams > 0 && grams !== item.grams ? rescale(item, grams) : item;
+        const summary = p.items.length === 1 || p.summary === current.name ? name : p.summary.includes(current.name) ? p.summary.replaceAll(current.name, name) : p.summary;
+        return {
+          ...p,
+          summary,
+          items: p.items.map((it, i) => (i === idx ? scaled : it)),
+          basis: p.basis.map((it, i) => (i === idx ? item : it)),
+          warnings: warning ? [...new Set([...p.warnings, warning])].slice(0, 4) : p.warnings,
+        };
+      });
+    } catch (e) {
+      if (!alive.current) return;
+      setItemError({ idx, text: t(`error.${e instanceof ApiError ? e.code : 'server'}`) });
+    } finally {
+      if (alive.current) markBusy(idx, false);
+    }
+  }
+
+  async function commitAdd() {
+    if (!adding || phase.kind !== 'result') return;
+    const name = adding.value.trim().slice(0, 60);
+    if (!name) return;
+    setAdding({ ...adding, busy: true, error: '' });
+    try {
+      const { item, warning } = await estimateItem({ name, lang, passcode: passcodeRef.current });
+      if (!alive.current) return;
+      setPhase((p) => (p.kind === 'result' ? { ...p, items: [...p.items, item], basis: [...p.basis, item], isFood: true, warnings: warning ? [...new Set([...p.warnings, warning])].slice(0, 4) : p.warnings } : p));
+      setAdding(null);
+    } catch (e) {
+      if (!alive.current) return;
+      setAdding({ value: adding.value, busy: false, error: t(`error.${e instanceof ApiError ? e.code : 'server'}`) });
+    }
+  }
+
   async function save() {
     if (phase.kind !== 'result' || saving) return;
     setSaving(true);
     setSaveError(false);
     try {
       const items = phase.items.filter(hasSubstance);
-      await db.meals.add({
-        date: localDateKey(),
-        ts: Date.now(),
-        thumb: img?.thumb ?? '',
-        summary: phase.summary,
-        note: note.trim(),
-        items,
-        warnings: phase.warnings,
-        kind: gdm.enabled ? mealKind : undefined,
-        source: input.kind,
-      });
+      const kind = gdm.enabled ? mealKind : editing?.kind;
+      if (editing) {
+        await db.meals.update(editing.id, { items, summary: phase.summary, note: note.trim(), warnings: phase.warnings, kind });
+      } else {
+        await db.meals.add({
+          date: localDateKey(),
+          ts: Date.now(),
+          thumb: img?.thumb ?? '',
+          summary: phase.summary,
+          note: note.trim(),
+          items,
+          warnings: phase.warnings,
+          kind,
+          source: input.kind === 'text' ? 'text' : 'photo',
+        });
+      }
       onClose();
     } catch {
       if (alive.current) setSaveError(true);
@@ -115,7 +191,7 @@ export default function Analyze({ input, onClose }: { input: MealInput; onClose:
   }
 
   const tot = phase.kind === 'result' ? totals(phase.items) : null;
-  const canSave = phase.kind === 'result' && phase.items.some(hasSubstance);
+  const canSave = phase.kind === 'result' && phase.items.some(hasSubstance) && busy.size === 0 && !adding?.busy;
   const showSummary = phase.kind === 'result' && phase.summary && !(phase.items.length === 1 && phase.items[0].name === phase.summary);
   const canRetry = phase.kind === 'error' && phase.code !== 'image' && (input.kind === 'text' || img !== null);
   const carbLimit = gdm.enabled ? gdmLimit(gdm, mealKind) : null;
@@ -127,7 +203,7 @@ export default function Analyze({ input, onClose }: { input: MealInput; onClose:
         <button type="button" onClick={onClose} aria-label={t('analyze.cancel')} className="-ml-2 rounded-full p-2 text-muted">
           <XIcon />
         </button>
-        <span className="text-sm text-muted">{t('appName')}</span>
+        <span className="text-sm text-muted">{editing ? `${t('analyze.editTitle')} · ${dayLabel(editing.date, lang)} ${timeLabel(editing.ts, lang)}` : t('appName')}</span>
         <span className="w-9" />
       </header>
 
@@ -136,12 +212,16 @@ export default function Analyze({ input, onClose }: { input: MealInput; onClose:
           <div className="overflow-hidden rounded-3xl bg-line" style={{ aspectRatio: '4 / 3' }}>
             {img && <img src={img.preview} alt="" className="h-full w-full object-cover" />}
           </div>
-        ) : (
+        ) : input.kind === 'text' ? (
           <div className="rounded-3xl bg-card px-5 py-4">
             <p className="text-xs text-muted">{t('analyze.fromText')}</p>
             <p className="mt-1 text-lg leading-relaxed">{input.text}</p>
           </div>
-        )}
+        ) : editing?.thumb ? (
+          <div className="overflow-hidden rounded-3xl bg-line" style={{ aspectRatio: '4 / 3' }}>
+            <img src={editing.thumb} alt="" className="h-full w-full object-cover" />
+          </div>
+        ) : null}
       </div>
 
       <main className="flex-1 px-4 pt-4" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 144px)' }}>
@@ -178,119 +258,187 @@ export default function Analyze({ input, onClose }: { input: MealInput; onClose:
 
         {phase.kind === 'result' && (
           <>
-            {!phase.isFood || phase.items.length === 0 ? (
+            {!phase.isFood && phase.items.length === 0 && !adding ? (
               <p className="py-8 text-center font-medium">{t(input.kind === 'text' ? 'analyze.notFoodText' : 'analyze.notFood')}</p>
             ) : (
               <>
                 {showSummary && <p className="text-lg font-medium">{phase.summary}</p>}
                 <p className={`text-xs text-muted ${showSummary ? 'mt-1' : ''}`}>{t('analyze.hint')}</p>
-                <ul className="mt-4 space-y-2">
-                  {phase.items.map((it, idx) => (
-                    <li key={idx} className="rounded-2xl bg-card p-3">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className="font-medium">{it.name}</p>
-                          {it.confidence === 'low' && <p className="text-xs text-muted">{t('analyze.rough')}</p>}
-                        </div>
-                        <p className="shrink-0 tabular-nums">
-                          {fmt('energy', it.energy)} <span className="text-xs text-muted">{t('kcal')}</span>
-                        </p>
-                      </div>
-                      <div className="mt-2 flex items-center justify-between">
-                        <div className="flex items-center rounded-full bg-bg">
-                          <button type="button" aria-label={t('analyze.less')} onClick={() => setGrams(idx, it.grams - 10)} className="p-3 text-muted">
-                            <MinusIcon width={18} height={18} />
-                          </button>
-                          <label className="flex items-baseline gap-0.5 tabular-nums">
-                            <input
-                              type="number"
-                              inputMode="numeric"
-                              min={0}
-                              placeholder="0"
-                              value={it.grams || ''}
-                              onChange={(e) => setGrams(idx, Number(e.target.value))}
-                              onFocus={(e) => e.target.select()}
-                              className="w-12 bg-transparent text-center outline-none placeholder:text-muted"
-                            />
-                            <span className="pr-1 text-xs text-muted">{t('g')}</span>
-                          </label>
-                          <button type="button" aria-label={t('analyze.more')} onClick={() => setGrams(idx, it.grams + 10)} className="p-3 text-muted">
-                            <PlusIcon width={18} height={18} />
-                          </button>
-                        </div>
-                        <button type="button" aria-label={t('analyze.remove', { name: it.name })} onClick={() => removeItem(idx)} className="p-3 text-muted">
-                          <XIcon width={16} height={16} />
-                        </button>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-                {tot && (
-                  <div className="mt-3 px-1">
-                    <div className="flex items-baseline justify-between">
-                      <span className="text-sm text-muted">{t('analyze.total')}</span>
-                      <span className="tabular-nums">
-                        <span className="text-xl font-semibold">{fmt('energy', tot.energy)}</span>
-                        <span className="text-sm text-muted"> {t('kcal')}</span>
-                      </span>
-                    </div>
-                    <p className="mt-1 text-xs text-muted">
-                      {t('n.protein')} {fmt('protein', tot.protein)}g · {t('n.fiber')} {fmt('fiber', tot.fiber)}g · {t('n.iron')} {fmt('iron', tot.iron)}mg · {t('n.calcium')} {fmt('calcium', tot.calcium)}mg · {t('n.folate')} {fmt('folate', tot.folate)}µg
-                    </p>
-                  </div>
-                )}
-                {gdm.enabled && tot && carbLimit !== null && (
-                  <div className="mt-4 rounded-2xl bg-card px-4 py-3">
-                    <div className="flex items-baseline justify-between gap-3">
-                      <span className="text-sm text-muted">
-                        {t('analyze.carbs')} · {t(mealKind === 'snack' ? 'analyze.snack' : 'analyze.main')}
-                      </span>
-                      <p className={`whitespace-nowrap tabular-nums ${carbOver ? 'text-warn' : ''}`}>
-                        <span className="text-lg font-semibold">{fmt('carbs', tot.carbs)}</span>
-                        <span className="text-xs text-muted"> / {carbLimit} g</span>
-                      </p>
-                    </div>
-                    <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-line">
-                      <div className={`h-full rounded-full ${carbOver ? 'bg-warn' : 'bg-accent'}`} style={{ width: `${Math.min(100, (tot.carbs / carbLimit) * 100)}%` }} />
-                    </div>
-                    {carbOver && <p className="mt-1.5 text-xs text-warn">{t('analyze.carbOver')}</p>}
-                  </div>
-                )}
-                {phase.warnings.length > 0 && (
-                  <div className="mt-4 rounded-2xl bg-warn/10 px-4 py-3">
-                    <p className="flex items-center gap-1.5 text-sm font-medium text-warn">
-                      <AlertIcon width={16} height={16} /> {t('analyze.safety')}
-                    </p>
-                    <ul className="mt-1 space-y-1 text-sm">
-                      {phase.warnings.map((w, i) => (
-                        <li key={i}>{w}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
               </>
             )}
+            <ul className="mt-4 space-y-2">
+              {phase.items.map((it, idx) => {
+                const isBusy = busy.has(idx);
+                return (
+                  <li key={idx} className="rounded-2xl bg-card p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        {renaming?.idx === idx ? (
+                          <input
+                            autoFocus
+                            type="text"
+                            value={renaming.value}
+                            onChange={(e) => setRenaming({ idx, value: e.target.value })}
+                            onFocus={(e) => e.target.select()}
+                            onBlur={() => void commitRename()}
+                            onKeyDown={(e) => {
+                              if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+                              if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                              if (e.key === 'Escape') setRenaming(null);
+                            }}
+                            enterKeyHint="done"
+                            className="w-full rounded-lg bg-bg px-2 py-1 font-medium outline-none"
+                          />
+                        ) : (
+                          <button type="button" onClick={() => !isBusy && setRenaming({ idx, value: it.name })} className="max-w-full truncate text-left font-medium underline decoration-muted/50 decoration-dotted underline-offset-4">
+                            {it.name}
+                          </button>
+                        )}
+                        {isBusy ? (
+                          <p className="text-xs text-accent">{t('analyze.estimating')}</p>
+                        ) : itemError?.idx === idx ? (
+                          <p className="text-xs text-warn">{itemError.text}</p>
+                        ) : (
+                          it.confidence === 'low' && <p className="text-xs text-muted">{t('analyze.rough')}</p>
+                        )}
+                      </div>
+                      <p className={`shrink-0 tabular-nums ${isBusy ? 'opacity-40' : ''}`}>
+                        {fmt('energy', it.energy)} <span className="text-xs text-muted">{t('kcal')}</span>
+                      </p>
+                    </div>
+                    <div className="mt-2 flex items-center justify-between">
+                      <div className="flex items-center rounded-full bg-bg">
+                        <button type="button" aria-label={t('analyze.less')} disabled={isBusy} onClick={() => setGrams(idx, it.grams - 10)} className="p-3 text-muted disabled:opacity-40">
+                          <MinusIcon width={18} height={18} />
+                        </button>
+                        <label className="flex items-baseline gap-0.5 tabular-nums">
+                          <input
+                            type="number"
+                            inputMode="numeric"
+                            min={0}
+                            placeholder="0"
+                            disabled={isBusy}
+                            value={it.grams || ''}
+                            onChange={(e) => setGrams(idx, Number(e.target.value))}
+                            onFocus={(e) => e.target.select()}
+                            className="w-12 bg-transparent text-center outline-none placeholder:text-muted disabled:opacity-40"
+                          />
+                          <span className="pr-1 text-xs text-muted">{t('g')}</span>
+                        </label>
+                        <button type="button" aria-label={t('analyze.more')} disabled={isBusy} onClick={() => setGrams(idx, it.grams + 10)} className="p-3 text-muted disabled:opacity-40">
+                          <PlusIcon width={18} height={18} />
+                        </button>
+                      </div>
+                      <button type="button" aria-label={t('analyze.remove', { name: it.name })} disabled={busy.size > 0} onClick={() => removeItem(idx)} className="p-3 text-muted disabled:opacity-40">
+                        <XIcon width={16} height={16} />
+                      </button>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
 
-            <div className="mt-6">
-              {!noteOpen ? (
-                <button type="button" onClick={() => setNoteOpen(true)} className="py-2 text-sm text-accent">
-                  + {t('analyze.note')}
+            <div className="mt-2">
+              {!adding ? (
+                <button type="button" onClick={() => setAdding({ value: '', busy: false, error: '' })} className="flex items-center gap-1 py-2 text-sm text-accent">
+                  <PlusIcon width={16} height={16} /> {t('analyze.addItem')}
                 </button>
               ) : (
                 <div className="rounded-2xl bg-card p-3">
-                  <textarea
-                    value={note}
-                    onChange={(e) => setNote(e.target.value.slice(0, 300))}
-                    placeholder={t('analyze.notePlaceholder')}
-                    rows={2}
-                    className="w-full resize-none bg-transparent text-base outline-none placeholder:text-muted"
-                  />
-                  <button type="button" disabled={!note.trim()} onClick={() => void run(note.trim())} className="mt-2 rounded-full bg-accent-soft px-4 py-2 text-sm text-accent disabled:opacity-40">
-                    {t('analyze.redo')}
-                  </button>
+                  <div className="flex gap-2">
+                    <input
+                      autoFocus
+                      type="text"
+                      value={adding.value}
+                      disabled={adding.busy}
+                      onChange={(e) => setAdding({ ...adding, value: e.target.value.slice(0, 60) })}
+                      onKeyDown={(e) => {
+                        if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+                        if (e.key === 'Enter') void commitAdd();
+                        if (e.key === 'Escape') setAdding(null);
+                      }}
+                      enterKeyHint="done"
+                      placeholder={t('analyze.addPlaceholder')}
+                      className="min-w-0 flex-1 rounded-xl bg-bg px-3 py-2 text-base outline-none placeholder:text-muted"
+                    />
+                    <button type="button" disabled={!adding.value.trim() || adding.busy} onClick={() => void commitAdd()} className="rounded-full bg-accent-soft px-4 py-2 text-sm text-accent disabled:opacity-40">
+                      {adding.busy ? t('analyze.estimating') : t('analyze.estimate')}
+                    </button>
+                    <button type="button" aria-label={t('analyze.cancel')} onClick={() => setAdding(null)} className="p-2 text-muted">
+                      <XIcon width={16} height={16} />
+                    </button>
+                  </div>
+                  {adding.error && <p className="mt-1 text-xs text-warn">{adding.error}</p>}
                 </div>
               )}
             </div>
+
+            {tot && phase.items.length > 0 && (
+              <div className="mt-3 px-1">
+                <div className="flex items-baseline justify-between">
+                  <span className="text-sm text-muted">{t('analyze.total')}</span>
+                  <span className="tabular-nums">
+                    <span className="text-xl font-semibold">{fmt('energy', tot.energy)}</span>
+                    <span className="text-sm text-muted"> {t('kcal')}</span>
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-muted">
+                  {t('n.protein')} {fmt('protein', tot.protein)}g · {t('n.fiber')} {fmt('fiber', tot.fiber)}g · {t('n.iron')} {fmt('iron', tot.iron)}mg · {t('n.calcium')} {fmt('calcium', tot.calcium)}mg · {t('n.folate')} {fmt('folate', tot.folate)}µg
+                </p>
+              </div>
+            )}
+            {gdm.enabled && tot && carbLimit !== null && phase.items.length > 0 && (
+              <div className="mt-4 rounded-2xl bg-card px-4 py-3">
+                <div className="flex items-baseline justify-between gap-3">
+                  <span className="text-sm text-muted">
+                    {t('analyze.carbs')} · {t(mealKind === 'snack' ? 'analyze.snack' : 'analyze.main')}
+                  </span>
+                  <p className={`whitespace-nowrap tabular-nums ${carbOver ? 'text-warn' : ''}`}>
+                    <span className="text-lg font-semibold">{fmt('carbs', tot.carbs)}</span>
+                    <span className="text-xs text-muted"> / {carbLimit} g</span>
+                  </p>
+                </div>
+                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-line">
+                  <div className={`h-full rounded-full ${carbOver ? 'bg-warn' : 'bg-accent'}`} style={{ width: `${Math.min(100, (tot.carbs / carbLimit) * 100)}%` }} />
+                </div>
+                {carbOver && <p className="mt-1.5 text-xs text-warn">{t('analyze.carbOver')}</p>}
+              </div>
+            )}
+            {phase.warnings.length > 0 && (
+              <div className="mt-4 rounded-2xl bg-warn/10 px-4 py-3">
+                <p className="flex items-center gap-1.5 text-sm font-medium text-warn">
+                  <AlertIcon width={16} height={16} /> {t('analyze.safety')}
+                </p>
+                <ul className="mt-1 space-y-1 text-sm">
+                  {phase.warnings.map((w, i) => (
+                    <li key={i}>{w}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {!editing && (
+              <div className="mt-6">
+                {!noteOpen ? (
+                  <button type="button" onClick={() => setNoteOpen(true)} className="py-2 text-sm text-accent">
+                    + {t('analyze.note')}
+                  </button>
+                ) : (
+                  <div className="rounded-2xl bg-card p-3">
+                    <textarea
+                      value={note}
+                      onChange={(e) => setNote(e.target.value.slice(0, 300))}
+                      placeholder={t('analyze.notePlaceholder')}
+                      rows={2}
+                      className="w-full resize-none bg-transparent text-base outline-none placeholder:text-muted"
+                    />
+                    <button type="button" disabled={!note.trim()} onClick={() => void run(note.trim())} className="mt-2 rounded-full bg-accent-soft px-4 py-2 text-sm text-accent disabled:opacity-40">
+                      {t('analyze.redo')}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </>
         )}
       </main>
@@ -315,7 +463,7 @@ export default function Analyze({ input, onClose }: { input: MealInput; onClose:
                 {t('analyze.cancel')}
               </button>
               <button type="button" onClick={() => void save()} disabled={!canSave || saving} className="flex-[2] rounded-full bg-accent py-3 font-medium text-on-accent disabled:opacity-40">
-                {t('analyze.save')}
+                {editing ? t('analyze.update') : t('analyze.save')}
               </button>
             </div>
           </div>

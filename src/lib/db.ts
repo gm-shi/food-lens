@@ -48,11 +48,23 @@ export interface SupplementLog {
   supplementId: number;
 }
 
+export type Mood = 1 | 2 | 3 | 4 | 5;
+
+export interface Note {
+  id: number;
+  /** Local calendar day, YYYY-MM-DD */
+  date: string;
+  ts: number;
+  mood: Mood;
+  text: string;
+}
+
 export const db = new Dexie('food-lens') as Dexie & {
   meals: EntityTable<Meal, 'id'>;
   weights: EntityTable<WeightEntry, 'id'>;
   supplements: EntityTable<Supplement, 'id'>;
   supplementLogs: EntityTable<SupplementLog, 'id'>;
+  notes: EntityTable<Note, 'id'>;
 };
 
 db.version(1).stores({
@@ -82,6 +94,29 @@ db.version(2)
         if (!Array.isArray(m.warnings)) m.warnings = [];
       }),
   );
+
+db.version(3).stores({
+  meals: '++id, date, ts',
+  weights: '++id, &date, ts',
+  supplements: '++id',
+  supplementLogs: '++id, date, [date+supplementId]',
+  dayNotes: '&date',
+});
+
+// v4: several notes per day. The v3 one-per-day notes are carried over.
+db.version(4)
+  .stores({
+    meals: '++id, date, ts',
+    weights: '++id, &date, ts',
+    supplements: '++id',
+    supplementLogs: '++id, date, [date+supplementId]',
+    dayNotes: null,
+    notes: '++id, date, ts',
+  })
+  .upgrade(async (tx) => {
+    const old = (await tx.table('dayNotes').toArray()) as { date: string; mood: Mood; text: string; ts: number }[];
+    if (old.length) await tx.table('notes').bulkAdd(old.map((n) => ({ date: n.date, ts: n.ts, mood: n.mood, text: n.text })));
+  });
 
 export function localDateKey(ts: number = Date.now()): string {
   const d = new Date(ts);
