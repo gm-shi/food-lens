@@ -103,3 +103,15 @@ export const AlertIcon = (p: P) => (
     <path d="M12 8v5M12 16h.01" />
   </svg>
 );
+
+export const EditIcon = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0-3-3L5 17v3zM13.5 6.5l3 3" />
+  </svg>
+);
+
+export const ChevronIcon = (p: P) => (
+  <svg {...base(p)}>
+    <path d="m9 6 6 6-6 6" />
+  </svg>
+);

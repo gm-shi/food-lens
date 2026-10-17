@@ -97,22 +97,53 @@ export async function scanLabel(input: { base64: string; mediaType: string; lang
   };
 }
 
-export interface SuggestInput {
+export interface RecommendInput {
   lang: Lang;
   passcode: string;
   week: number | null;
   trimester: Trimester | null;
+  /** Average over logged days before today, or null when there is no history */
+  avg7: Nutrients | null;
+  avgDays: number;
   totals: Nutrients;
   targets: Partial<Record<keyof Nutrients, number>>;
   meals: string[];
+  previous: string[];
   hour: number;
+  mood: number | null;
+  moodText: string;
   gdm: { mainCarbs: number; snackCarbs: number } | null;
 }
 
-export async function suggestNext(input: SuggestInput): Promise<string> {
+export interface Recommendation {
+  name: string;
+  reason: string;
+}
+
+export async function recommend(input: RecommendInput): Promise<Recommendation[]> {
   const { passcode, ...rest } = input;
-  const data = (await post('/suggest', passcode, rest)) as { suggestion?: unknown };
-  return String(data.suggestion ?? '').slice(0, 400);
+  const data = (await post('/recommend', passcode, rest)) as { recommendations?: unknown };
+  const list = Array.isArray(data.recommendations) ? data.recommendations : [];
+  return list
+    .map((r) => {
+      const o = (r && typeof r === 'object' ? r : {}) as Record<string, unknown>;
+      return { name: String(o.name ?? '').slice(0, 60), reason: String(o.reason ?? '').slice(0, 160) };
+    })
+    .filter((r) => r.name)
+    .slice(0, 3);
+}
+
+/**
+ * Estimate nutrients for one named food (used when the user corrects or adds an item).
+ * With `grams` the estimate is for that weight; without, for the amount named or a typical serving.
+ */
+export async function estimateItem(input: { name: string; grams?: number; lang: Lang; passcode: string }): Promise<{ item: FoodItem; warning: string }> {
+  const body: Record<string, unknown> = { name: input.name, lang: input.lang };
+  if (input.grams !== undefined) body.grams = input.grams;
+  const data = (await post('/item', input.passcode, body)) as { item?: unknown; warning?: unknown };
+  const item = cleanItem(data.item);
+  if (!item.grams) item.grams = Math.round(input.grams ?? 100);
+  return { item, warning: typeof data.warning === 'string' ? data.warning.trim().slice(0, 200) : '' };
 }
 
 function num(v: unknown): number {

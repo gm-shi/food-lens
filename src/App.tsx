@@ -22,9 +22,9 @@ export default function App() {
 
   return (
     <div className="mx-auto min-h-dvh max-w-md">
-      {tab === 'today' && <Today onPick={(file) => setInput({ kind: 'photo', file })} onText={(text) => setInput({ kind: 'text', text })} onOpenSettings={() => setTab('settings')} />}
+      {tab === 'today' && <Today onPick={(file) => setInput({ kind: 'photo', file })} onText={(text) => setInput({ kind: 'text', text })} onEdit={(meal) => setInput({ kind: 'edit', meal })} onOpenSettings={() => setTab('settings')} />}
       {tab === 'weight' && <Weight />}
-      {tab === 'history' && <History />}
+      {tab === 'history' && <History onEdit={(meal) => setInput({ kind: 'edit', meal })} />}
       {tab === 'settings' && <Settings />}
       <TabBar tab={tab} onChange={setTab} />
     </div>

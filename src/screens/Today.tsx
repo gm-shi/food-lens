@@ -1,27 +1,46 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db, localDateKey } from '../lib/db';
+import { db, localDateKey, type Meal, type Mood } from '../lib/db';
 import { fmt } from '../lib/nutrients';
-import { setSupplementTaken, useDay, usePregnancy } from '../lib/hooks';
+import { setDayNote, setSupplementTaken, useDay, useDayNote, usePregnancy, useWeekAverage } from '../lib/hooks';
 import { DISPLAY_ORDER, PRIORITY, expectedGain } from '../lib/targets';
 import { gdmLimit, useSettings } from '../lib/settings';
-import { ApiError, suggestNext } from '../lib/api';
+import { ApiError, recommend, type Recommendation } from '../lib/api';
+import { loadRecs, markAttempted, saveRecs, wasAttempted } from '../lib/recs';
 import { TIPS } from '../lib/tips';
 import { useT } from '../i18n';
 import MealRow from '../components/MealRow';
 import NutrientBar from '../components/NutrientBar';
-import { AlertIcon, CheckIcon, PhotoIcon, SparkIcon } from '../components/Icons';
+import { AlertIcon, CheckIcon, PhotoIcon } from '../components/Icons';
 
-export default function Today({ onPick, onText, onOpenSettings }: { onPick: (f: File) => void; onText: (text: string) => void; onOpenSettings: () => void }) {
+export const MOODS: { value: Mood; emoji: string }[] = [
+  { value: 1, emoji: '😣' },
+  { value: 2, emoji: '😕' },
+  { value: 3, emoji: '😐' },
+  { value: 4, emoji: '🙂' },
+  { value: 5, emoji: '😄' },
+];
+
+interface Props {
+  onPick: (f: File) => void;
+  onText: (text: string) => void;
+  onEdit: (meal: Meal) => void;
+  onOpenSettings: () => void;
+}
+
+export default function Today({ onPick, onText, onEdit, onOpenSettings }: Props) {
   const t = useT();
   const { lang, passcode, gdm } = useSettings();
   const preg = usePregnancy();
   const [today, setToday] = useState(localDateKey);
   const [showAll, setShowAll] = useState(false);
-  const [suggestion, setSuggestion] = useState<{ text: string } | { error: string } | null>(null);
-  const [suggesting, setSuggesting] = useState(false);
   const [textOpen, setTextOpen] = useState(false);
   const [text, setText] = useState('');
+  const [recs, setRecs] = useState<Recommendation[] | null>(() => loadRecs(localDateKey()));
+  const [recsBusy, setRecsBusy] = useState(false);
+  const [recsError, setRecsError] = useState('');
+  const [noteDraft, setNoteDraft] = useState<string | null>(null);
+  const [noteFocus, setNoteFocus] = useState(false);
 
   // Keep "today" current when the app is resumed after midnight or left open.
   useEffect(() => {
@@ -39,6 +58,8 @@ export default function Today({ onPick, onText, onOpenSettings }: { onPick: (f: 
   }, []);
 
   const day = useDay(today);
+  const note = useDayNote(today);
+  const week = useWeekAverage(true);
   const latestWeight = useLiveQuery(() => db.weights.orderBy('ts').last(), []);
   const energy = preg.targetOf('energy');
   const target = energy?.value ?? 0;
@@ -60,31 +81,60 @@ export default function Today({ onPick, onText, onOpenSettings }: { onPick: (f: 
     if (f) onPick(f);
   }
 
-  async function suggest() {
-    if (suggesting) return;
-    setSuggesting(true);
-    setSuggestion(null);
+  async function fetchRecs(previous: Recommendation[] | null) {
+    if (recsBusy) return;
+    setRecsBusy(true);
+    setRecsError('');
     try {
       const targets: Partial<Record<string, number>> = {};
       for (const tg of preg.targets) targets[tg.key] = tg.value;
-      const text = await suggestNext({
+      const items = await recommend({
         lang,
         passcode,
         week: preg.week,
         trimester: preg.week === null ? null : preg.trimester,
+        avg7: week.loggedDays > 0 ? week.avg : null,
+        avgDays: week.loggedDays,
         totals: day.totals,
         targets,
         meals: day.meals.map((m) => m.summary || m.items.map((i) => i.name).join(', ')),
+        previous: previous?.map((r) => r.name) ?? [],
         hour: new Date().getHours(),
+        mood: note?.mood ?? null,
+        moodText: note?.text ?? '',
         gdm: gdm.enabled ? { mainCarbs: gdmLimit(gdm, 'main'), snackCarbs: gdmLimit(gdm, 'snack') } : null,
       });
-      setSuggestion({ text });
+      if (items.length) {
+        setRecs(items);
+        saveRecs(today, items);
+      } else {
+        setRecsError(t('error.server'));
+      }
     } catch (e) {
-      setSuggestion({ error: t(`error.${e instanceof ApiError ? e.code : 'server'}`) });
+      setRecsError(t(`error.${e instanceof ApiError ? e.code : 'server'}`));
     } finally {
-      setSuggesting(false);
+      setRecsBusy(false);
     }
   }
+
+  // One automatic fetch per day, once something is known about the day (a mood or a meal) and the note is not being typed.
+  const fetchRecsRef = useRef(fetchRecs);
+  fetchRecsRef.current = fetchRecs;
+  const wantRecs = recs === null && !recsBusy && !recsError && passcode !== '' && !wasAttempted(today) && !noteFocus && noteDraft === null && (day.meals.length > 0 || !!note);
+  useEffect(() => {
+    if (!wantRecs) return;
+    // A little longer after a mood tap, so a note typed right after it is included.
+    const id = setTimeout(() => {
+      markAttempted(today);
+      void fetchRecsRef.current(null);
+    }, day.meals.length ? 400 : 3000);
+    return () => clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wantRecs, note?.ts]);
+
+  useEffect(() => {
+    setRecs(loadRecs(today));
+  }, [today]);
 
   return (
     <div className="px-5" style={{ paddingTop: 'calc(env(safe-area-inset-top) + 24px)', paddingBottom: 'calc(env(safe-area-inset-bottom) + 192px)' }}>
@@ -112,6 +162,46 @@ export default function Today({ onPick, onText, onOpenSettings }: { onPick: (f: 
             {gain < 0 ? t('today.weightLoss', { kg: latestWeight!.kg, n: (-gain).toFixed(1) }) : t('today.weightLine', { kg: latestWeight!.kg, gain: gain.toFixed(1) })} · {t('today.weightBand', { min: band.min.toFixed(1), max: band.max.toFixed(1) })}
           </p>
         )}
+      </section>
+
+      <section className="mt-4 rounded-3xl bg-card px-5 py-4">
+        <div className="flex items-baseline justify-between">
+          <h2 className="font-medium">{t('today.mood')}</h2>
+          {note && <span className="text-xs text-muted">{t(`mood.${note.mood}`)}</span>}
+        </div>
+        <div className="mt-2 flex justify-between">
+          {MOODS.map((m) => {
+            const on = note?.mood === m.value;
+            return (
+              <button
+                key={m.value}
+                type="button"
+                aria-label={t(`mood.${m.value}`)}
+                aria-pressed={on}
+                onClick={() => void setDayNote(today, { mood: m.value })}
+                className={`flex h-12 w-12 items-center justify-center rounded-full text-2xl transition-transform ${on ? 'scale-110 bg-accent-soft' : 'bg-bg opacity-70'}`}
+              >
+                {m.emoji}
+              </button>
+            );
+          })}
+        </div>
+        {note && (
+          <input
+            type="text"
+            value={noteDraft ?? note.text}
+            placeholder={t('today.moodPlaceholder')}
+            onChange={(e) => setNoteDraft(e.target.value.slice(0, 200))}
+            onFocus={() => setNoteFocus(true)}
+            onBlur={() => {
+              if (noteDraft !== null && noteDraft !== note.text) void setDayNote(today, { text: noteDraft.trim() });
+              setNoteDraft(null);
+              setNoteFocus(false);
+            }}
+            className="mt-3 w-full rounded-2xl bg-bg px-4 py-2.5 text-base outline-none placeholder:text-muted"
+          />
+        )}
+        {note?.mood === 1 && <p className="mt-2 text-xs leading-relaxed text-muted">{t('today.moodCare')}</p>}
       </section>
 
       <section className="mt-4 rounded-3xl bg-card px-5 py-4">
@@ -173,29 +263,39 @@ export default function Today({ onPick, onText, onOpenSettings }: { onPick: (f: 
         </section>
       )}
 
-      <section className="mt-4">
-        {suggestion && 'text' in suggestion ? (
-          <div className="rounded-3xl bg-accent-soft px-5 py-4">
-            <p className="text-sm leading-relaxed text-accent">{suggestion.text}</p>
-            <div className="mt-2 flex items-baseline justify-between gap-3 text-xs text-muted">
-              <span>{t('today.suggestNote')}</span>
-              <button type="button" onClick={() => void suggest()} disabled={suggesting} className="shrink-0 py-1 text-accent disabled:opacity-60">
-                {suggesting ? t('today.suggesting') : t('today.suggestAgain')}
+      {(recs || recsBusy || recsError) && (
+        <section className="mt-4 rounded-3xl bg-accent-soft px-5 py-4">
+          <div className="flex items-baseline justify-between">
+            <h2 className="font-medium text-accent">{t('today.recs')}</h2>
+            {recs && (
+              <button type="button" onClick={() => void fetchRecs(recs)} disabled={recsBusy} className="-my-1.5 -mr-2 rounded-full px-3 py-2 text-sm text-accent disabled:opacity-60">
+                {recsBusy ? t('today.recsLoading') : t('today.recsMore')}
               </button>
-            </div>
+            )}
           </div>
-        ) : (
-          <button
-            type="button"
-            onClick={() => void suggest()}
-            disabled={suggesting}
-            className="flex w-full items-center justify-center gap-2 rounded-3xl border border-dashed border-line py-3 text-sm text-accent disabled:opacity-60"
-          >
-            <SparkIcon width={16} height={16} /> {suggesting ? t('today.suggesting') : t('today.suggest')}
-          </button>
-        )}
-        {suggestion && 'error' in suggestion && <p className="mt-2 text-center text-xs text-warn">{suggestion.error}</p>}
-      </section>
+          {recs ? (
+            <ul className="mt-2 space-y-2">
+              {recs.map((r, i) => (
+                <li key={i} className="text-sm leading-relaxed">
+                  <span className="font-medium text-accent">{r.name}</span>
+                  <span className="text-muted"> · {r.reason}</span>
+                </li>
+              ))}
+            </ul>
+          ) : recsBusy ? (
+            <p className="mt-2 text-sm text-muted">{t('today.recsLoading')}</p>
+          ) : null}
+          {recsError && (
+            <p className="mt-2 text-xs text-warn">
+              {recsError}{' '}
+              <button type="button" onClick={() => void fetchRecs(recs)} className="underline">
+                {t('analyze.retry')}
+              </button>
+            </p>
+          )}
+          {recs && <p className="mt-2 text-xs text-muted">{t('today.recsNote')}</p>}
+        </section>
+      )}
 
       <section className="mt-4 space-y-2">
         {day.meals.length === 0 ? (
@@ -204,7 +304,7 @@ export default function Today({ onPick, onText, onOpenSettings }: { onPick: (f: 
             <p className="mt-1 text-sm text-muted">{t('today.emptyHint')}</p>
           </div>
         ) : (
-          day.meals.map((m) => <MealRow key={m.id} meal={m} />)
+          day.meals.map((m) => <MealRow key={m.id} meal={m} onEdit={onEdit} />)
         )}
       </section>
 
