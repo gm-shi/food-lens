@@ -1,5 +1,5 @@
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db, localDateKey, type DayNote, type Meal, type Mood, type Supplement } from './db';
+import { db, localDateKey, type Meal, type Mood, type Note, type Supplement } from './db';
 import { totals } from './nutrition';
 import { NUTRIENT_KEYS, zeroNutrients, type Nutrients } from './nutrients';
 import { useSettings, type Profile } from './settings';
@@ -41,16 +41,21 @@ export function useDay(date: string): Day {
   return { meals, supplements, takenIds, totals: totals(meals.flatMap((m) => m.items), taken), warnings };
 }
 
-export function useDayNote(date: string): DayNote | undefined {
-  return useLiveQuery(() => db.dayNotes.get(date), [date]);
+/** The day's notes, oldest first. */
+export function useDayNotes(date: string): Note[] {
+  return useLiveQuery(() => db.notes.where('date').equals(date).sortBy('ts'), [date]) ?? [];
 }
 
-export async function setDayNote(date: string, patch: { mood?: Mood; text?: string }): Promise<void> {
-  // One read-write transaction so two quick saves (a face, then the text) cannot overwrite each other.
-  await db.transaction('rw', db.dayNotes, async () => {
-    const existing = await db.dayNotes.get(date);
-    await db.dayNotes.put({ date, mood: patch.mood ?? existing?.mood ?? 3, text: patch.text ?? existing?.text ?? '', ts: Date.now() });
-  });
+export async function addNote(date: string, mood: Mood, text = ''): Promise<number> {
+  return db.notes.add({ date, ts: Date.now(), mood, text });
+}
+
+export async function updateNote(id: number, patch: { mood?: Mood; text?: string }): Promise<void> {
+  await db.notes.update(id, patch);
+}
+
+export async function deleteNote(id: number): Promise<void> {
+  await db.notes.delete(id);
 }
 
 /**

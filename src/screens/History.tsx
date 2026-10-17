@@ -5,7 +5,7 @@ import { totals } from '../lib/nutrition';
 import { fmt } from '../lib/nutrients';
 import { usePregnancy, useWeekAverage } from '../lib/hooks';
 import { PRIORITY } from '../lib/targets';
-import { dayLabel } from '../lib/date';
+import { dayLabel, timeLabel } from '../lib/date';
 import { useSettings } from '../lib/settings';
 import { useT } from '../i18n';
 import MealRow from '../components/MealRow';
@@ -22,7 +22,7 @@ export default function History({ onEdit }: { onEdit: (meal: Meal) => void }) {
   const { lang } = useSettings();
   const preg = usePregnancy();
   const meals = useLiveQuery(() => db.meals.orderBy('ts').reverse().toArray(), []) ?? [];
-  const notes = useLiveQuery(() => db.dayNotes.toArray(), []) ?? [];
+  const notes = useLiveQuery(() => db.notes.orderBy('ts').toArray(), []) ?? [];
   const week = useWeekAverage();
   const [calOpen, setCalOpen] = useState(false);
   const [month, setMonth] = useState(() => {
@@ -37,7 +37,8 @@ export default function History({ onEdit }: { onEdit: (meal: Meal) => void }) {
     if (list) list.push(m);
     else days.set(m.date, [m]);
   }
-  const noteByDate = new Map(notes.map((n) => [n.date, n]));
+  const noteByDate = new Map<string, typeof notes>();
+  for (const n of notes) noteByDate.set(n.date, [...(noteByDate.get(n.date) ?? []), n]);
   const energy = preg.targetOf('energy');
   const today = localDateKey();
 
@@ -147,10 +148,14 @@ export default function History({ onEdit }: { onEdit: (meal: Meal) => void }) {
                   )}
                 </div>
                 {n && (
-                  <p className="mb-2 px-1 text-sm text-muted">
-                    {MOODS.find((m) => m.value === n.mood)?.emoji} {t(`mood.${n.mood}`)}
-                    {n.text && <span> · {n.text}</span>}
-                  </p>
+                  <ul className="mb-2 space-y-0.5 px-1 text-sm text-muted">
+                    {n.map((x) => (
+                      <li key={x.id}>
+                        {MOODS.find((m) => m.value === x.mood)?.emoji} <span className="tabular-nums">{timeLabel(x.ts, lang)}</span> {t(`mood.${x.mood}`)}
+                        {x.text && <span> · {x.text}</span>}
+                      </li>
+                    ))}
+                  </ul>
                 )}
                 {list.length === 0 && !n ? (
                   <p className="rounded-2xl border border-dashed border-line px-4 py-6 text-center text-sm text-muted">{t('history.noneThatDay')}</p>

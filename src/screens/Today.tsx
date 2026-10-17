@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, localDateKey, type Meal, type Mood } from '../lib/db';
 import { fmt } from '../lib/nutrients';
-import { setDayNote, setSupplementTaken, useDay, useDayNote, usePregnancy, useWeekAverage } from '../lib/hooks';
+import { addNote, deleteNote, setSupplementTaken, updateNote, useDay, useDayNotes, usePregnancy, useWeekAverage } from '../lib/hooks';
 import { DISPLAY_ORDER, PRIORITY, expectedGain } from '../lib/targets';
 import { gdmLimit, useSettings } from '../lib/settings';
 import { ApiError, recommend, type Recommendation } from '../lib/api';
@@ -11,7 +11,8 @@ import { TIPS } from '../lib/tips';
 import { useT } from '../i18n';
 import MealRow from '../components/MealRow';
 import NutrientBar from '../components/NutrientBar';
-import { AlertIcon, CheckIcon, PhotoIcon } from '../components/Icons';
+import { AlertIcon, CheckIcon, PhotoIcon, XIcon } from '../components/Icons';
+import { timeLabel } from '../lib/date';
 
 export const MOODS: { value: Mood; emoji: string }[] = [
   { value: 1, emoji: '😣' },
@@ -39,8 +40,9 @@ export default function Today({ onPick, onText, onEdit, onOpenSettings }: Props)
   const [recs, setRecs] = useState<Recommendation[] | null>(() => loadRecs(localDateKey()));
   const [recsBusy, setRecsBusy] = useState(false);
   const [recsError, setRecsError] = useState('');
-  const [noteDraft, setNoteDraft] = useState<string | null>(null);
+  const [draft, setDraft] = useState<{ id: number; text: string } | null>(null);
   const [noteFocus, setNoteFocus] = useState(false);
+  const [freshNoteId, setFreshNoteId] = useState<number | null>(null);
 
   // Keep "today" current when the app is resumed after midnight or left open.
   useEffect(() => {
@@ -58,7 +60,9 @@ export default function Today({ onPick, onText, onEdit, onOpenSettings }: Props)
   }, []);
 
   const day = useDay(today);
-  const note = useDayNote(today);
+  const notes = useDayNotes(today);
+  const latest = notes.length ? notes[notes.length - 1] : null;
+  const anyRough = notes.some((n) => n.mood === 1);
   const week = useWeekAverage(true);
   const latestWeight = useLiveQuery(() => db.weights.orderBy('ts').last(), []);
   const energy = preg.targetOf('energy');
@@ -100,8 +104,14 @@ export default function Today({ onPick, onText, onEdit, onOpenSettings }: Props)
         meals: day.meals.map((m) => m.summary || m.items.map((i) => i.name).join(', ')),
         previous: previous?.map((r) => r.name) ?? [],
         hour: new Date().getHours(),
-        mood: note?.mood ?? null,
-        moodText: note?.text ?? '',
+        mood: latest?.mood ?? null,
+        moodText: notes
+          .slice()
+          .reverse()
+          .map((n) => n.text.trim())
+          .filter(Boolean)
+          .join('；')
+          .slice(0, 200),
         gdm: gdm.enabled ? { mainCarbs: gdmLimit(gdm, 'main'), snackCarbs: gdmLimit(gdm, 'snack') } : null,
       });
       if (items.length) {
@@ -120,7 +130,7 @@ export default function Today({ onPick, onText, onEdit, onOpenSettings }: Props)
   // One automatic fetch per day, once something is known about the day (a mood or a meal) and the note is not being typed.
   const fetchRecsRef = useRef(fetchRecs);
   fetchRecsRef.current = fetchRecs;
-  const wantRecs = recs === null && !recsBusy && !recsError && passcode !== '' && !wasAttempted(today) && !noteFocus && noteDraft === null && (day.meals.length > 0 || !!note);
+  const wantRecs = recs === null && !recsBusy && !recsError && passcode !== '' && !wasAttempted(today) && !noteFocus && draft === null && (day.meals.length > 0 || notes.length > 0);
   useEffect(() => {
     if (!wantRecs) return;
     // A little longer after a mood tap, so a note typed right after it is included.
@@ -130,7 +140,7 @@ export default function Today({ onPick, onText, onEdit, onOpenSettings }: Props)
     }, day.meals.length ? 400 : 3000);
     return () => clearTimeout(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wantRecs, note?.ts]);
+  }, [wantRecs, latest?.ts]);
 
   useEffect(() => {
     setRecs(loadRecs(today));
@@ -165,43 +175,66 @@ export default function Today({ onPick, onText, onEdit, onOpenSettings }: Props)
       </section>
 
       <section className="mt-4 rounded-3xl bg-card px-5 py-4">
-        <div className="flex items-baseline justify-between">
-          <h2 className="font-medium">{t('today.mood')}</h2>
-          {note && <span className="text-xs text-muted">{t(`mood.${note.mood}`)}</span>}
-        </div>
+        <h2 className="font-medium">{t('today.mood')}</h2>
+        <p className="text-xs text-muted">{t('today.moodHint')}</p>
         <div className="mt-2 flex justify-between">
-          {MOODS.map((m) => {
-            const on = note?.mood === m.value;
-            return (
-              <button
-                key={m.value}
-                type="button"
-                aria-label={t(`mood.${m.value}`)}
-                aria-pressed={on}
-                onClick={() => void setDayNote(today, { mood: m.value })}
-                className={`flex h-12 w-12 items-center justify-center rounded-full text-2xl transition-transform ${on ? 'scale-110 bg-accent-soft' : 'bg-bg opacity-70'}`}
-              >
-                {m.emoji}
-              </button>
-            );
-          })}
+          {MOODS.map((m) => (
+            <button
+              key={m.value}
+              type="button"
+              aria-label={t(`mood.${m.value}`)}
+              onClick={() => {
+                void addNote(today, m.value).then((id) => {
+                  setFreshNoteId(id);
+                  setDraft({ id, text: '' });
+                });
+              }}
+              className="flex h-12 w-12 items-center justify-center rounded-full bg-bg text-2xl active:scale-95"
+            >
+              {m.emoji}
+            </button>
+          ))}
         </div>
-        {note && (
-          <input
-            type="text"
-            value={noteDraft ?? note.text}
-            placeholder={t('today.moodPlaceholder')}
-            onChange={(e) => setNoteDraft(e.target.value.slice(0, 200))}
-            onFocus={() => setNoteFocus(true)}
-            onBlur={() => {
-              if (noteDraft !== null && noteDraft !== note.text) void setDayNote(today, { text: noteDraft.trim() });
-              setNoteDraft(null);
-              setNoteFocus(false);
-            }}
-            className="mt-3 w-full rounded-2xl bg-bg px-4 py-2.5 text-base outline-none placeholder:text-muted"
-          />
+        {notes.length > 0 && (
+          <ul className="mt-3 space-y-2">
+            {notes.map((n) => {
+              const editing = draft?.id === n.id;
+              return (
+                <li key={n.id} className="flex items-center gap-2 rounded-2xl bg-bg px-3 py-2">
+                  <span className="text-xl">{MOODS.find((m) => m.value === n.mood)?.emoji}</span>
+                  <span className="w-11 shrink-0 text-xs tabular-nums text-muted">{timeLabel(n.ts, lang)}</span>
+                  <input
+                    type="text"
+                    autoFocus={freshNoteId === n.id}
+                    value={editing ? draft.text : n.text}
+                    placeholder={t('today.moodPlaceholder')}
+                    onFocus={() => {
+                      setNoteFocus(true);
+                      setDraft({ id: n.id, text: n.text });
+                    }}
+                    onChange={(e) => setDraft({ id: n.id, text: e.target.value.slice(0, 200) })}
+                    onBlur={() => {
+                      if (editing && draft.text.trim() !== n.text) void updateNote(n.id, { text: draft.text.trim() });
+                      setDraft(null);
+                      setNoteFocus(false);
+                      if (freshNoteId === n.id) setFreshNoteId(null);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+                      if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                    }}
+                    enterKeyHint="done"
+                    className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted"
+                  />
+                  <button type="button" aria-label={t('note.delete')} onClick={() => void deleteNote(n.id)} className="-mr-1 p-1.5 text-muted">
+                    <XIcon width={14} height={14} />
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
         )}
-        {note?.mood === 1 && <p className="mt-2 text-xs leading-relaxed text-muted">{t('today.moodCare')}</p>}
+        {anyRough && <p className="mt-2 text-xs leading-relaxed text-muted">{t('today.moodCare')}</p>}
       </section>
 
       <section className="mt-4 rounded-3xl bg-card px-5 py-4">
