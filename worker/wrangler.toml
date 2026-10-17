@@ -7,6 +7,11 @@ compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 preview_urls = false
 
+# Run close to the Anthropic API rather than close to the phone: outbound requests from some
+# Cloudflare locations are refused by Anthropic's region check ("Request not allowed").
+[placement]
+mode = "smart"
+
 # Keep the Worker's own console.error lines (status codes only, never photos) visible in the dashboard.
 [observability]
 enabled = true

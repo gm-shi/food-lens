@@ -151,7 +151,7 @@ export default {
           .filter(Boolean)
           .join('\n');
 
-        const res = await client.messages.create({
+        const res = await withRegionRetry(() => client.messages.create({
           model,
           max_tokens: 8000,
           system: ANALYZE_SYSTEM,
@@ -167,7 +167,7 @@ export default {
                 : userText,
             },
           ],
-        });
+        }));
         return finish(res, Analysis, cors, (data) => {
           // v1 clients read `calories`; keep it as an alias of `energy` so an older app build keeps working.
           const items = Array.isArray(data.items) ? (data.items as Record<string, unknown>[]).map((it) => ({ ...it, calories: it.energy })) : [];
@@ -180,7 +180,7 @@ export default {
         const mediaType = typeof body.mediaType === 'string' && MEDIA_TYPES.has(body.mediaType) ? (body.mediaType as MediaType) : null;
         if (!image || !mediaType) return json({ error: 'bad_request' }, 400, cors);
         if (image.length > MAX_IMAGE_B64) return json({ error: 'too_large' }, 413, cors);
-        const res = await client.messages.create({
+        const res = await withRegionRetry(() => client.messages.create({
           model,
           max_tokens: 6000,
           system: LABEL_SYSTEM,
@@ -194,7 +194,7 @@ export default {
               ],
             },
           ],
-        });
+        }));
         return finish(res, Label, cors, (data) => ({ label: data }));
       }
 
@@ -202,13 +202,13 @@ export default {
         const name = typeof body.name === 'string' ? body.name.trim().slice(0, 80) : '';
         const grams = typeof body.grams === 'number' && Number.isFinite(body.grams) && body.grams > 0 ? Math.round(body.grams) : null;
         if (!name) return json({ error: 'bad_request' }, 400, cors);
-        const res = await client.messages.create({
+        const res = await withRegionRetry(() => client.messages.create({
           model,
           max_tokens: 3000,
           system: ITEM_SYSTEM,
           output_config: { effort: 'low', format: zodOutputFormat(ItemResult) },
           messages: [{ role: 'user', content: `Food: ${name}\nWeight: ${grams ? `${grams} g` : 'the amount named, or one typical serving if none is named'}\nWrite the name and warning in ${language}.` }],
-        });
+        }));
         return finish(res, ItemResult, cors, (data) => data);
       }
 
@@ -242,24 +242,43 @@ export default {
         .filter(Boolean)
         .join('\n');
 
-      const res = await client.messages.create({
+      const res = await withRegionRetry(() => client.messages.create({
         model,
         max_tokens: 2500,
         system: RECOMMEND_SYSTEM,
         output_config: { effort: 'low', format: zodOutputFormat(Recommendations) },
         messages: [{ role: 'user', content: userText }],
-      });
+      }));
       return finish(res, Recommendations, cors, (data) => ({ recommendations: data.recommendations }));
     } catch (e) {
       // Log status and message only: never the request body, image or headers.
       console.error('anthropic_error', e instanceof Anthropic.APIError ? e.status : '', e instanceof Error ? e.message : String(e));
       if (e instanceof Anthropic.RateLimitError) return json({ error: 'rate_limited' }, 429, cors);
       if (e instanceof Anthropic.AuthenticationError) return json({ error: 'misconfigured' }, 500, cors);
-      if (e instanceof Anthropic.APIError) return json({ error: 'upstream', status: e.status }, 502, cors);
+      if (e instanceof Anthropic.APIError) return json({ error: 'upstream', status: e.status, detail: String(e.message ?? '').slice(0, 300) }, 502, cors);
       return json({ error: 'upstream' }, 502, cors);
     }
   },
 } satisfies ExportedHandler<Env>;
+
+/**
+ * Anthropic refuses requests whose source address geolocates to an unsupported region with
+ * 403 "Request not allowed". A Worker's outbound address varies per connection, so retry a few times.
+ */
+async function withRegionRetry<T>(fn: () => Promise<T>): Promise<T> {
+  let last: unknown;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      last = e;
+      const blocked = e instanceof Anthropic.APIError && e.status === 403 && /not allowed/i.test(String(e.message ?? ''));
+      if (!blocked) throw e;
+      await new Promise((r) => setTimeout(r, 150 * (attempt + 1)));
+    }
+  }
+  throw last;
+}
 
 /** Turn a structured-output response into the JSON the app expects, reporting refusals and truncation with their own status. */
 function finish(res: Anthropic.Message, schema: z.ZodTypeAny, cors: Record<string, string> | null, wrap: (data: Record<string, unknown>) => Record<string, unknown>): Response {
