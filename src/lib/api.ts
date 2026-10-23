@@ -1,5 +1,5 @@
 import type { Lang } from '../i18n';
-import type { Confidence, FoodItem } from './db';
+import type { AmountUnit, Confidence, FoodItem } from './db';
 import { NUTRIENT_KEYS, roundNutrient, type Nutrients } from './nutrients';
 import type { Trimester } from './targets';
 
@@ -97,6 +97,9 @@ export async function scanLabel(input: { base64: string; mediaType: string; lang
   };
 }
 
+/** The meal the recommendations are for. */
+export type MealSlot = 'breakfast' | 'lunch' | 'snack' | 'dinner';
+
 export interface RecommendInput {
   lang: Lang;
   passcode: string;
@@ -110,6 +113,7 @@ export interface RecommendInput {
   meals: string[];
   previous: string[];
   hour: number;
+  slot: MealSlot;
   mood: number | null;
   moodText: string;
   gdm: { mainCarbs: number; snackCarbs: number } | null;
@@ -133,13 +137,59 @@ export async function recommend(input: RecommendInput): Promise<Recommendation[]
     .slice(0, 3);
 }
 
+export interface WeeklyInput {
+  lang: Lang;
+  passcode: string;
+  week: number | null;
+  range: { start: string; end: string };
+  /** False while the week is still in progress */
+  complete: boolean;
+  /** Days of the week that have begun (7 once it is over) */
+  daysElapsed: number;
+  loggedDays: number;
+  mealsCount: number;
+  /** Average daily intake over the logged days */
+  avg: Nutrients;
+  /** The highest single day's caffeine, since the advice is a daily limit */
+  caffeineMax: number;
+  targets: Partial<Record<keyof Nutrients, number>>;
+  prev: { loggedDays: number; avg: Nutrients } | null;
+  weight: { start: number; end: number } | null;
+  moodAvg: number | null;
+  /** Number of notes with a mood of "rough" or "not great" */
+  moodLow: number;
+  moodNotes: string[];
+  warnings: string[];
+  gdm: { mainCarbs: number; snackCarbs: number } | null;
+}
+
+export interface WeeklyResult {
+  headline: string;
+  summary: string;
+  focus: string[];
+}
+
+/** A short written summary of one week, from the Worker. */
+export async function weeklySummary(input: WeeklyInput): Promise<WeeklyResult> {
+  const { passcode, ...rest } = input;
+  const data = (await post('/weekly', passcode, rest)) as { weekly?: unknown };
+  const w = (data.weekly && typeof data.weekly === 'object' ? data.weekly : {}) as Record<string, unknown>;
+  const focus = Array.isArray(w.focus) ? w.focus.filter((f): f is string => typeof f === 'string').map((f) => f.trim().slice(0, 200)).filter(Boolean).slice(0, 4) : [];
+  const result = { headline: String(w.headline ?? '').trim().slice(0, 80), summary: String(w.summary ?? '').trim().slice(0, 600), focus };
+  if (!result.summary && !result.headline) throw new ApiError('server', 'empty');
+  return result;
+}
+
 /**
  * Estimate nutrients for one named food (used when the user corrects or adds an item).
- * With `grams` the estimate is for that weight; without, for the amount named or a typical serving.
+ * With `grams` the estimate is for that amount in `unit`; without, for the amount named or a typical serving.
  */
-export async function estimateItem(input: { name: string; grams?: number; lang: Lang; passcode: string }): Promise<{ item: FoodItem; warning: string }> {
+export async function estimateItem(input: { name: string; grams?: number; unit?: AmountUnit; lang: Lang; passcode: string }): Promise<{ item: FoodItem; warning: string }> {
   const body: Record<string, unknown> = { name: input.name, lang: input.lang };
-  if (input.grams !== undefined) body.grams = input.grams;
+  if (input.grams !== undefined) {
+    body.grams = input.grams;
+    body.unit = input.unit ?? 'g';
+  }
   const data = (await post('/item', input.passcode, body)) as { item?: unknown; warning?: unknown };
   const item = cleanItem(data.item);
   if (!item.grams) item.grams = Math.round(input.grams ?? 100);
@@ -160,6 +210,7 @@ export function cleanItem(x: unknown): FoodItem {
     grams: Math.round(num(o.grams)),
     confidence: (conf === 'low' || conf === 'medium' || conf === 'high' ? conf : 'medium') as Confidence,
   } as FoodItem;
+  if (o.unit === 'ml') item.unit = 'ml';
   for (const k of NUTRIENT_KEYS) item[k] = roundNutrient(k, num(o[k]));
   if (!item.energy && typeof o.calories === 'number') item.energy = roundNutrient('energy', num(o.calories));
   return item;

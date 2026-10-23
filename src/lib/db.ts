@@ -2,10 +2,15 @@ import Dexie, { type EntityTable } from 'dexie';
 import { NUTRIENT_KEYS, type Nutrients } from './nutrients';
 
 export type Confidence = 'low' | 'medium' | 'high';
+/** How an item's amount is measured: grams, or millilitres for drinks and liquid foods. */
+export type AmountUnit = 'g' | 'ml';
 
 export interface FoodItem extends Nutrients {
   name: string;
+  /** Portion amount in `unit` (the field name predates millilitres) */
   grams: number;
+  /** Absent means grams */
+  unit?: AmountUnit;
   confidence: Confidence;
 }
 

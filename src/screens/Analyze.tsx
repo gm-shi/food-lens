@@ -1,16 +1,21 @@
 import { useEffect, useRef, useState } from 'react';
 import { analyzeMeal, ApiError, estimateItem, type ApiErrorCode, type MealSource } from '../lib/api';
 import { prepareImage, type PreparedImage } from '../lib/image';
-import { db, localDateKey, type FoodItem, type Meal } from '../lib/db';
+import { db, localDateKey, type AmountUnit, type FoodItem, type Meal } from '../lib/db';
 import { hasSubstance, rescale, totals } from '../lib/nutrition';
 import { fmt } from '../lib/nutrients';
 import { usePregnancy } from '../lib/hooks';
 import { gdmLimit, updateSettings, useSettings } from '../lib/settings';
 import { useT } from '../i18n';
-import { dayLabel, timeLabel } from '../lib/date';
+import { dayLabel, timeKey, timeLabel, timestampOf } from '../lib/date';
 import { AlertIcon, MinusIcon, PlusIcon, XIcon } from '../components/Icons';
 
 export type MealInput = { kind: 'photo'; file: File } | { kind: 'text'; text: string } | { kind: 'edit'; meal: Meal };
+
+/** Told to the caller when a meal was saved: the day it went to. */
+export interface SavedMeal {
+  date: string;
+}
 
 type Phase =
   | { kind: 'preparing' }
@@ -18,7 +23,9 @@ type Phase =
   | { kind: 'result'; basis: FoodItem[]; items: FoodItem[]; summary: string; isFood: boolean; warnings: string[] }
   | { kind: 'error'; code: ApiErrorCode | 'image' };
 
-export default function Analyze({ input, onClose }: { input: MealInput; onClose: () => void }) {
+const DATE_KEY = /^\d{4}-\d{2}-\d{2}$/;
+
+export default function Analyze({ input, onClose }: { input: MealInput; onClose: (saved?: SavedMeal) => void }) {
   const t = useT();
   const { lang, passcode, gdm } = useSettings();
   const preg = usePregnancy();
@@ -30,6 +37,9 @@ export default function Analyze({ input, onClose }: { input: MealInput; onClose:
   const [note, setNote] = useState(editing?.note ?? '');
   const [noteOpen, setNoteOpen] = useState(false);
   const [mealKind, setMealKind] = useState<'main' | 'snack'>(editing?.kind === 'snack' ? 'snack' : 'main');
+  // The day and time the meal is logged to: now by default, so yesterday's forgotten dinner can be added today.
+  const [when, setWhen] = useState(() => ({ date: editing ? editing.date : localDateKey(), time: timeKey(editing ? editing.ts : Date.now()) }));
+  const initialWhen = useRef(when);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(false);
   const [renaming, setRenaming] = useState<{ idx: number; value: string } | null>(null);
@@ -93,6 +103,17 @@ export default function Analyze({ input, onClose }: { input: MealInput; onClose:
     setPhase({ ...phase, items });
   }
 
+  /** Switch an item between grams and millilitres; the amount and nutrients stay as they are. */
+  function setUnit(idx: number, unit: AmountUnit) {
+    if (phase.kind !== 'result') return;
+    const patch = (it: FoodItem, i: number): FoodItem => {
+      if (i !== idx) return it;
+      const { unit: _old, ...rest } = it;
+      return unit === 'ml' ? { ...rest, unit } : rest;
+    };
+    setPhase({ ...phase, items: phase.items.map(patch), basis: phase.basis.map(patch) });
+  }
+
   function removeItem(idx: number) {
     if (phase.kind !== 'result') return;
     setPhase({ ...phase, items: phase.items.filter((_, i) => i !== idx), basis: phase.basis.filter((_, i) => i !== idx) });
@@ -107,7 +128,7 @@ export default function Analyze({ input, onClose }: { input: MealInput; onClose:
     });
   }
 
-  /** Rename an item and re-estimate its nutrients for the new name at the current weight. */
+  /** Rename an item and re-estimate its nutrients for the new name at the current amount. */
   async function commitRename() {
     if (!renaming || phase.kind !== 'result') return;
     const { idx, value } = renaming;
@@ -118,10 +139,12 @@ export default function Analyze({ input, onClose }: { input: MealInput; onClose:
     markBusy(idx, true);
     setItemError(null);
     try {
-      const { item: est, warning } = await estimateItem({ name, grams: current.grams || 100, lang, passcode: passcodeRef.current });
+      const { item: est, warning } = await estimateItem({ name, grams: current.grams || 100, unit: current.unit, lang, passcode: passcodeRef.current });
       if (!alive.current) return;
       const base = current.grams > 0 && est.grams > 0 && est.grams !== current.grams ? rescale(est, current.grams) : est;
-      const item = { ...base, name, grams: current.grams || est.grams };
+      // The amount and unit she set stay; only the name and nutrients come from the estimate.
+      const { unit: _estUnit, ...rest } = base;
+      const item: FoodItem = current.unit === 'ml' ? { ...rest, name, grams: current.grams || est.grams, unit: 'ml' } : { ...rest, name, grams: current.grams || est.grams };
       setPhase((p) => {
         if (p.kind !== 'result') return p;
         const old = p.items[idx];
@@ -167,12 +190,26 @@ export default function Analyze({ input, onClose }: { input: MealInput; onClose:
     try {
       const items = phase.items.filter(hasSubstance);
       const kind = gdm.enabled ? mealKind : editing?.kind;
+      // Untouched day and time: a new meal is stamped with the moment it is saved, an edited meal keeps its stamp.
+      // Otherwise the chosen minute, plus the current seconds so two meals in one minute never share a timestamp
+      // (the backup import tells meals apart by it).
+      const untouched = when.date === initialWhen.current.date && when.time === initialWhen.current.time;
+      const today = localDateKey();
+      let date: string;
+      let ts: number;
+      if (untouched) {
+        ts = editing ? editing.ts : Date.now();
+        date = editing ? editing.date : localDateKey(ts);
+      } else {
+        date = DATE_KEY.test(when.date) && when.date <= today ? when.date : today;
+        ts = timestampOf(date, when.time) + (Date.now() % 60_000);
+      }
       if (editing) {
-        await db.meals.update(editing.id, { items, summary: phase.summary, note: note.trim(), warnings: phase.warnings, kind });
+        await db.meals.update(editing.id, { items, summary: phase.summary, note: note.trim(), warnings: phase.warnings, kind, date, ts });
       } else {
         await db.meals.add({
-          date: localDateKey(),
-          ts: Date.now(),
+          date,
+          ts,
           thumb: img?.thumb ?? '',
           summary: phase.summary,
           note: note.trim(),
@@ -182,7 +219,7 @@ export default function Analyze({ input, onClose }: { input: MealInput; onClose:
           source: input.kind === 'text' ? 'text' : 'photo',
         });
       }
-      onClose();
+      onClose({ date });
     } catch {
       if (alive.current) setSaveError(true);
     } finally {
@@ -196,11 +233,13 @@ export default function Analyze({ input, onClose }: { input: MealInput; onClose:
   const canRetry = phase.kind === 'error' && phase.code !== 'image' && (input.kind === 'text' || img !== null);
   const carbLimit = gdm.enabled ? gdmLimit(gdm, mealKind) : null;
   const carbOver = tot !== null && carbLimit !== null && tot.carbs > carbLimit;
+  const todayKey = localDateKey();
+  const unitLabel = (it: FoodItem) => (it.unit === 'ml' ? t('ml') : t('g'));
 
   return (
     <div className="mx-auto flex min-h-dvh max-w-md flex-col" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
       <header className="flex items-center justify-between px-4 py-3">
-        <button type="button" onClick={onClose} aria-label={t('analyze.cancel')} className="-ml-2 rounded-full p-2 text-muted">
+        <button type="button" onClick={() => onClose()} aria-label={t('analyze.cancel')} className="-ml-2 rounded-full p-2 text-muted">
           <XIcon />
         </button>
         <span className="text-sm text-muted">{editing ? `${t('analyze.editTitle')} · ${dayLabel(editing.date, lang)} ${timeLabel(editing.ts, lang)}` : t('appName')}</span>
@@ -311,20 +350,29 @@ export default function Analyze({ input, onClose }: { input: MealInput; onClose:
                         <button type="button" aria-label={t('analyze.less')} disabled={isBusy} onClick={() => setGrams(idx, it.grams - 10)} className="p-3 text-muted disabled:opacity-40">
                           <MinusIcon width={18} height={18} />
                         </button>
-                        <label className="flex items-baseline gap-0.5 tabular-nums">
+                        <div className="flex items-baseline gap-0.5 tabular-nums">
                           <input
                             type="number"
                             inputMode="numeric"
                             min={0}
                             placeholder="0"
+                            aria-label={t('analyze.amount')}
                             disabled={isBusy}
                             value={it.grams || ''}
                             onChange={(e) => setGrams(idx, Number(e.target.value))}
                             onFocus={(e) => e.target.select()}
                             className="w-12 bg-transparent text-center outline-none placeholder:text-muted disabled:opacity-40"
                           />
-                          <span className="pr-1 text-xs text-muted">{t('g')}</span>
-                        </label>
+                          <button
+                            type="button"
+                            aria-label={`${t('analyze.unitToggle')} · ${unitLabel(it)}`}
+                            disabled={isBusy}
+                            onClick={() => setUnit(idx, it.unit === 'ml' ? 'g' : 'ml')}
+                            className="-ml-1 px-2 py-2 text-xs text-muted underline decoration-muted/50 decoration-dotted underline-offset-2 disabled:opacity-40"
+                          >
+                            {unitLabel(it)}
+                          </button>
+                        </div>
                         <button type="button" aria-label={t('analyze.more')} disabled={isBusy} onClick={() => setGrams(idx, it.grams + 10)} className="p-3 text-muted disabled:opacity-40">
                           <PlusIcon width={18} height={18} />
                         </button>
@@ -417,8 +465,34 @@ export default function Analyze({ input, onClose }: { input: MealInput; onClose:
               </div>
             )}
 
+            {phase.items.length > 0 && (
+              <div className="mt-4 flex items-center justify-between gap-3 rounded-2xl bg-card px-4 py-3">
+                <span className="text-sm">
+                  <span className="text-muted">{t('analyze.when')}</span>
+                  {when.date !== todayKey && <span className="ml-1.5 text-accent">{dayLabel(when.date, lang)}</span>}
+                </span>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="date"
+                    aria-label={t('analyze.date')}
+                    max={todayKey}
+                    value={when.date}
+                    onChange={(e) => setWhen((w) => ({ ...w, date: DATE_KEY.test(e.target.value) ? e.target.value : todayKey }))}
+                    className="rounded-lg bg-bg px-2 py-1.5 text-base tabular-nums outline-none"
+                  />
+                  <input
+                    type="time"
+                    aria-label={t('analyze.time')}
+                    value={when.time}
+                    onChange={(e) => setWhen((w) => ({ ...w, time: e.target.value || w.time }))}
+                    className="rounded-lg bg-bg px-2 py-1.5 text-base tabular-nums outline-none"
+                  />
+                </div>
+              </div>
+            )}
+
             {!editing && (
-              <div className="mt-6">
+              <div className="mt-4">
                 {!noteOpen ? (
                   <button type="button" onClick={() => setNoteOpen(true)} className="py-2 text-sm text-accent">
                     + {t('analyze.note')}
@@ -459,7 +533,7 @@ export default function Analyze({ input, onClose }: { input: MealInput; onClose:
               </div>
             )}
             <div className="flex gap-3 p-4">
-              <button type="button" onClick={onClose} className="flex-1 rounded-full border border-line py-3 font-medium">
+              <button type="button" onClick={() => onClose()} className="flex-1 rounded-full border border-line py-3 font-medium">
                 {t('analyze.cancel')}
               </button>
               <button type="button" onClick={() => void save()} disabled={!canSave || saving} className="flex-[2] rounded-full bg-accent py-3 font-medium text-on-accent disabled:opacity-40">

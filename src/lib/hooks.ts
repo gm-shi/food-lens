@@ -2,7 +2,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { db, localDateKey, type Meal, type Mood, type Note, type Supplement } from './db';
 import { totals } from './nutrition';
 import { NUTRIENT_KEYS, zeroNutrients, type Nutrients } from './nutrients';
-import { useSettings, type Profile } from './settings';
+import { useSettings, type Profile, type Settings } from './settings';
 import { pregnancyWeek, targetsFor, trimesterOf, type Target, type Trimester } from './targets';
 
 export interface Pregnancy {
@@ -14,13 +14,17 @@ export interface Pregnancy {
   targetOf: (key: Target['key']) => Target | undefined;
 }
 
-export function usePregnancy(): Pregnancy {
-  const s = useSettings();
-  const week = s.profile ? pregnancyWeek(s.profile.dueDate) : null;
+/** Week, trimester and targets as they stand at a moment (`at` defaults to now; pass a past day to look back). */
+export function pregnancyFor(s: Settings, at: number = Date.now()): Pregnancy {
+  const week = s.profile ? pregnancyWeek(s.profile.dueDate, at) : null;
   const trimester: Trimester = week === null ? 2 : trimesterOf(week);
   const profileOk = s.profile && s.profile.heightCm > 0 && s.profile.prePregnancyKg > 0 && s.profile.age > 0 ? s.profile : null;
   const targets = targetsFor(profileOk, s.overrides, trimester);
   return { profile: s.profile, week, trimester, targets, targetOf: (key) => targets.find((t) => t.key === key) };
+}
+
+export function usePregnancy(): Pregnancy {
+  return pregnancyFor(useSettings());
 }
 
 export interface Day {
