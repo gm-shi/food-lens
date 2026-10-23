@@ -3,33 +3,32 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { db, localDateKey, type Meal } from '../lib/db';
 import { totals } from '../lib/nutrition';
 import { fmt } from '../lib/nutrients';
-import { usePregnancy, useWeekAverage } from '../lib/hooks';
-import { PRIORITY } from '../lib/targets';
-import { dayLabel, timeLabel } from '../lib/date';
+import { addDays, dayLabel, parseDateKey, timeLabel, weekStartOf } from '../lib/date';
+import { MOODS } from '../lib/moods';
 import { useSettings } from '../lib/settings';
 import { useT } from '../i18n';
 import MealRow from '../components/MealRow';
-import NutrientBar from '../components/NutrientBar';
+import WeekCard from '../components/WeekCard';
 import { ChevronIcon } from '../components/Icons';
-import { MOODS } from './Today';
 
 function monthKey(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 
-export default function History({ onEdit }: { onEdit: (meal: Meal) => void }) {
+/** `focusDate` opens the calendar on that day (used after a meal is saved to an earlier day). */
+export default function History({ onEdit, focusDate = null }: { onEdit: (meal: Meal) => void; focusDate?: string | null }) {
   const t = useT();
   const { lang } = useSettings();
-  const preg = usePregnancy();
-  const meals = useLiveQuery(() => db.meals.orderBy('ts').reverse().toArray(), []) ?? [];
+  const loadedMeals = useLiveQuery(() => db.meals.orderBy('ts').reverse().toArray(), []);
+  const meals = loadedMeals ?? [];
   const notes = useLiveQuery(() => db.notes.orderBy('ts').toArray(), []) ?? [];
-  const week = useWeekAverage();
-  const [calOpen, setCalOpen] = useState(false);
+  const [calOpen, setCalOpen] = useState(focusDate !== null);
   const [month, setMonth] = useState(() => {
-    const n = new Date();
+    const n = focusDate ? parseDateKey(focusDate) : new Date();
     return new Date(n.getFullYear(), n.getMonth(), 1);
   });
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(focusDate);
+  const [pickedWeek, setPickedWeek] = useState<string | null>(null);
 
   const days = new Map<string, Meal[]>();
   for (const m of meals) {
@@ -39,8 +38,14 @@ export default function History({ onEdit }: { onEdit: (meal: Meal) => void }) {
   }
   const noteByDate = new Map<string, typeof notes>();
   for (const n of notes) noteByDate.set(n.date, [...(noteByDate.get(n.date) ?? []), n]);
-  const energy = preg.targetOf('energy');
   const today = localDateKey();
+
+  // The week card opens on this week, or on last week while this one is still empty.
+  const thisWeek = weekStartOf(today);
+  const lastWeek = addDays(thisWeek, -7);
+  const hasThisWeek = meals.some((m) => m.date >= thisWeek);
+  const hasLastWeek = meals.some((m) => m.date >= lastWeek && m.date < thisWeek);
+  const weekStart = pickedWeek ?? (loadedMeals && !hasThisWeek && hasLastWeek ? lastWeek : thisWeek);
 
   // Calendar grid, Monday first
   const first = new Date(month.getFullYear(), month.getMonth(), 1);
@@ -113,22 +118,7 @@ export default function History({ onEdit }: { onEdit: (meal: Meal) => void }) {
         </section>
       )}
 
-      {!selected && week.loggedDays > 0 && (
-        <section className="mt-4 rounded-3xl bg-card px-5 py-4">
-          <h2 className="font-medium">{t('history.week', { n: week.loggedDays })}</h2>
-          {energy && (
-            <p className="mt-1 text-sm text-muted">
-              {t('n.energy')} <span className="tabular-nums text-ink">{fmt('energy', week.avg.energy)}</span> / {energy.value} {t('kcal')}
-            </p>
-          )}
-          <div className="mt-1 divide-y divide-line">
-            {PRIORITY[preg.trimester].map((k) => {
-              const tg = preg.targetOf(k);
-              return tg ? <NutrientBar key={k} target={tg} value={week.avg[k]} compact /> : null;
-            })}
-          </div>
-        </section>
-      )}
+      {!selected && (meals.length > 0 || pickedWeek !== null) && <WeekCard start={weekStart} onChange={setPickedWeek} />}
 
       {shown.length === 0 ? (
         <p className="mt-10 text-center text-sm text-muted">{t('history.empty')}</p>

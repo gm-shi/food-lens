@@ -4,6 +4,7 @@ import { db, type Meal, type Note, type Supplement, type SupplementLog, type Wei
 import { ApiError, cleanItem, scanLabel } from '../lib/api';
 import { prepareImage } from '../lib/image';
 import { clearRecs } from '../lib/recs';
+import { clearWeekly } from '../lib/weekly';
 import { CameraIcon } from '../components/Icons';
 import { NUTRIENTS, type NutrientKey } from '../lib/nutrients';
 import { usePregnancy } from '../lib/hooks';
@@ -168,6 +169,7 @@ export default function Settings() {
       await db.notes.clear();
     });
     clearRecs();
+    clearWeekly();
   }
 
   async function addSupplement() {

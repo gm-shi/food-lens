@@ -58,7 +58,7 @@ export default function MealRow({ meal, onEdit }: { meal: Meal; onEdit?: (meal: 
             {meal.items.map((i, idx) => (
               <li key={idx} className="flex justify-between gap-3">
                 <span className="truncate">
-                  {i.name} <span className="text-muted">{i.grams}{t('g')}</span>
+                  {i.name} <span className="text-muted">{i.grams}{t(i.unit === 'ml' ? 'ml' : 'g')}</span>
                 </span>
                 <span className="shrink-0 tabular-nums text-muted">{fmt('energy', i.energy)}</span>
               </li>
