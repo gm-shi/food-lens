@@ -1,12 +1,21 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
+import OpenAI from 'openai';
+import { zodTextFormat } from 'openai/helpers/zod';
 import { z } from 'zod';
 
 export interface Env {
-  ANTHROPIC_API_KEY: string;
+  /** Which LLM answers: "anthropic" (default), "openai" or "deepseek"; set in wrangler.toml [vars]. */
+  PROVIDER?: string;
+  ANTHROPIC_API_KEY?: string;
+  OPENAI_API_KEY?: string;
+  DEEPSEEK_API_KEY?: string;
   APP_PASSCODE: string;
   ALLOWED_ORIGINS: string;
+  /** Anthropic model; the other providers have their own model vars. */
   MODEL: string;
+  OPENAI_MODEL?: string;
+  DEEPSEEK_MODEL?: string;
   EFFORT: string;
 }
 
@@ -131,7 +140,9 @@ export default {
     if (url.pathname === '/health') return json({ ok: true }, 200, cors);
     if (request.method !== 'POST' || !['/analyze', '/recommend', '/label', '/item', '/weekly'].includes(url.pathname)) return new Response('Not found', { status: 404 });
 
-    if (!env.ANTHROPIC_API_KEY || !env.APP_PASSCODE) return json({ error: 'misconfigured' }, 500, cors);
+    const defaultProvider = providerOf(env);
+    if (!defaultProvider) console.error('bad_provider', env.PROVIDER);
+    if (!defaultProvider || !apiKeyFor(env, defaultProvider) || !env.APP_PASSCODE) return json({ error: 'misconfigured' }, 500, cors);
     if (!safeEqual(request.headers.get('x-app-passcode') ?? '', env.APP_PASSCODE)) return json({ error: 'unauthorized' }, 401, cors);
 
     const length = Number(request.headers.get('content-length') ?? 0);
@@ -145,8 +156,14 @@ export default {
     }
     const lang = body.lang === 'en' ? 'en' : 'zh';
     const language = lang === 'zh' ? 'Simplified Chinese' : 'English';
-    const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, maxRetries: 1 });
-    const model = env.MODEL || 'claude-sonnet-5-5';
+    // The app may name the provider for one request (its model switch); without it the Worker's PROVIDER applies.
+    // A named provider whose key is not set is an error, never a silent fallback: the user chose it knowingly.
+    const provider = body.provider === undefined ? defaultProvider : typeof body.provider === 'string' && PROVIDERS.has(body.provider) ? (body.provider as Provider) : null;
+    if (!provider) return json({ error: 'bad_request' }, 400, cors);
+    if (!apiKeyFor(env, provider)) {
+      console.error('no_key', provider);
+      return json({ error: 'misconfigured' }, 500, cors);
+    }
 
     try {
       if (url.pathname === '/analyze') {
@@ -167,24 +184,15 @@ export default {
           .filter(Boolean)
           .join('\n');
 
-        const res = await withRegionRetry(() => client.messages.create({
-          model,
-          max_tokens: 8000,
+        const res = await complete(env, provider, {
           system: ANALYZE_SYSTEM,
-          output_config: { effort: effortOf(env.EFFORT), format: zodOutputFormat(Analysis) },
-          messages: [
-            {
-              role: 'user',
-              content: image && mediaType
-                ? [
-                    { type: 'image', source: { type: 'base64', media_type: mediaType, data: image } },
-                    { type: 'text', text: userText },
-                  ]
-                : userText,
-            },
-          ],
-        }));
-        return finish(res, Analysis, cors, (data) => {
+          text: userText,
+          image: image && mediaType ? { data: image, mediaType } : null,
+          schema: Analysis,
+          effort: effortOf(env.EFFORT),
+          maxTokens: 8000,
+        });
+        return finish(res, cors, (data) => {
           // v1 clients read `calories`; keep it as an alias of `energy` so an older app build keeps working.
           const items = Array.isArray(data.items) ? (data.items as Record<string, unknown>[]).map((it) => ({ ...it, calories: it.energy })) : [];
           return { result: { ...data, items } };
@@ -196,22 +204,15 @@ export default {
         const mediaType = typeof body.mediaType === 'string' && MEDIA_TYPES.has(body.mediaType) ? (body.mediaType as MediaType) : null;
         if (!image || !mediaType) return json({ error: 'bad_request' }, 400, cors);
         if (image.length > MAX_IMAGE_B64) return json({ error: 'too_large' }, 413, cors);
-        const res = await withRegionRetry(() => client.messages.create({
-          model,
-          max_tokens: 6000,
+        const res = await complete(env, provider, {
           system: LABEL_SYSTEM,
-          output_config: { effort: effortOf(env.EFFORT), format: zodOutputFormat(Label) },
-          messages: [
-            {
-              role: 'user',
-              content: [
-                { type: 'image', source: { type: 'base64', media_type: mediaType, data: image } },
-                { type: 'text', text: `Write the name, dose and notes in ${language}.` },
-              ],
-            },
-          ],
-        }));
-        return finish(res, Label, cors, (data) => ({ label: data }));
+          text: `Write the name, dose and notes in ${language}.`,
+          image: { data: image, mediaType },
+          schema: Label,
+          effort: effortOf(env.EFFORT),
+          maxTokens: 6000,
+        });
+        return finish(res, cors, (data) => ({ label: data }));
       }
 
       if (url.pathname === '/item') {
@@ -219,22 +220,22 @@ export default {
         const grams = typeof body.grams === 'number' && Number.isFinite(body.grams) && body.grams > 0 ? Math.round(body.grams) : null;
         const unit = body.unit === 'ml' ? 'ml' : 'g';
         if (!name) return json({ error: 'bad_request' }, 400, cors);
-        const res = await withRegionRetry(() => client.messages.create({
-          model,
-          max_tokens: 3000,
+        const res = await complete(env, provider, {
           system: ITEM_SYSTEM,
-          output_config: { effort: 'low', format: zodOutputFormat(ItemResult) },
-          messages: [{ role: 'user', content: `Food: ${name}\nAmount: ${grams ? `${grams} ${unit}` : 'the amount named, or one typical serving if none is named'}\nWrite the name and warning in ${language}.` }],
-        }));
-        return finish(res, ItemResult, cors, (data) => data);
+          text: `Food: ${name}\nAmount: ${grams ? `${grams} ${unit}` : 'the amount named, or one typical serving if none is named'}\nWrite the name and warning in ${language}.`,
+          schema: ItemResult,
+          effort: 'low',
+          maxTokens: 3000,
+        });
+        return finish(res, cors, (data) => data);
       }
 
       if (url.pathname === '/weekly') {
         const range = isRecord(body.range) ? body.range : {};
         const start = typeof range.start === 'string' ? range.start.slice(0, 10) : '';
         const end = typeof range.end === 'string' ? range.end.slice(0, 10) : '';
-        const complete = body.complete === true;
-        const daysElapsed = complete ? 7 : clampInt(body.daysElapsed, 1, 7);
+        const weekComplete = body.complete === true;
+        const daysElapsed = weekComplete ? 7 : clampInt(body.daysElapsed, 1, 7);
         const loggedDays = clampInt(body.loggedDays, 0, 7);
         const mealsCount = clampInt(body.mealsCount, 0, 200);
         const avg = isRecord(body.avg) ? body.avg : {};
@@ -257,7 +258,7 @@ export default {
         const userText = [
           `Answer in ${language}.`,
           week !== null ? `Pregnancy week ${week}.` : '',
-          complete ? `Week ${start} to ${end}: ${loggedDays} of 7 days logged, ${mealsCount} meals.` : `Week ${start} to ${end}, still in progress: ${loggedDays} of the ${daysElapsed} days so far logged, ${mealsCount} meals.`,
+          weekComplete ? `Week ${start} to ${end}: ${loggedDays} of 7 days logged, ${mealsCount} meals.` : `Week ${start} to ${end}, still in progress: ${loggedDays} of the ${daysElapsed} days so far logged, ${mealsCount} meals.`,
           prev ? `Previous week: ${prev.days} days logged.` : 'No previous week to compare with.',
           weight ? `Weight logged: ${fmtNum(weight.start)} kg at the start of the week, ${fmtNum(weight.end)} kg at the end.` : '',
           moodAvg !== null ? `How she felt: average ${moodAvg} out of 5${moodLow ? `, felt unwell or not great ${moodLow} time(s)` : ''}.` : '',
@@ -269,14 +270,8 @@ export default {
         ]
           .filter(Boolean)
           .join('\n');
-        const res = await withRegionRetry(() => client.messages.create({
-          model,
-          max_tokens: 2500,
-          system: WEEKLY_SYSTEM,
-          output_config: { effort: 'low', format: zodOutputFormat(Weekly) },
-          messages: [{ role: 'user', content: userText }],
-        }));
-        return finish(res, Weekly, cors, (data) => ({ weekly: data }));
+        const res = await complete(env, provider, { system: WEEKLY_SYSTEM, text: userText, schema: Weekly, effort: 'low', maxTokens: 2500 });
+        return finish(res, cors, (data) => ({ weekly: data }));
       }
 
       // /recommend
@@ -312,21 +307,10 @@ export default {
         .filter(Boolean)
         .join('\n');
 
-      const res = await withRegionRetry(() => client.messages.create({
-        model,
-        max_tokens: 2500,
-        system: RECOMMEND_SYSTEM,
-        output_config: { effort: 'low', format: zodOutputFormat(Recommendations) },
-        messages: [{ role: 'user', content: userText }],
-      }));
-      return finish(res, Recommendations, cors, (data) => ({ recommendations: data.recommendations, slot }));
+      const res = await complete(env, provider, { system: RECOMMEND_SYSTEM, text: userText, schema: Recommendations, effort: 'low', maxTokens: 2500 });
+      return finish(res, cors, (data) => ({ recommendations: data.recommendations, slot }));
     } catch (e) {
-      // Log status and message only: never the request body, image or headers.
-      console.error('anthropic_error', e instanceof Anthropic.APIError ? e.status : '', e instanceof Error ? e.message : String(e));
-      if (e instanceof Anthropic.RateLimitError) return json({ error: 'rate_limited' }, 429, cors);
-      if (e instanceof Anthropic.AuthenticationError) return json({ error: 'misconfigured' }, 500, cors);
-      if (e instanceof Anthropic.APIError) return json({ error: 'upstream', status: e.status, detail: String(e.message ?? '').slice(0, 300) }, 502, cors);
-      return json({ error: 'upstream' }, 502, cors);
+      return errorResponse(e, cors);
     }
   },
 } satisfies ExportedHandler<Env>;
@@ -350,31 +334,226 @@ async function withRegionRetry<T>(fn: () => Promise<T>): Promise<T> {
   throw last;
 }
 
-/** Turn a structured-output response into the JSON the app expects, reporting refusals and truncation with their own status. */
-function finish(res: Anthropic.Message, schema: z.ZodTypeAny, cors: Record<string, string> | null, wrap: (data: Record<string, unknown>) => Record<string, unknown>): Response {
-  if (res.stop_reason === 'refusal') return json({ error: 'refused' }, 422, cors);
+// ---------------------------------------------------------------------------------------------------
+// Providers. Every route asks for one schema-shaped answer through complete(); PROVIDER decides which
+// API gives it, and the handlers above never see the difference.
+
+type Provider = 'anthropic' | 'openai' | 'deepseek';
+const PROVIDERS = new Set<string>(['anthropic', 'openai', 'deepseek']);
+
+interface CompleteArgs {
+  system: string;
+  text: string;
+  image?: { data: string; mediaType: MediaType } | null;
+  schema: z.ZodTypeAny;
+  effort: Effort;
+  maxTokens: number;
+}
+
+interface Completion {
+  data: Record<string, unknown>;
+  model: string;
+  usage: { input_tokens: number; output_tokens: number };
+}
+
+/** An answer the app cannot use, reported to it with its own error code and status (see errorResponse). */
+class CompletionError extends Error {
+  constructor(
+    readonly code: 'refused' | 'incomplete' | 'unparseable' | 'upstream',
+    readonly extra: Record<string, unknown> = {},
+  ) {
+    super(code);
+  }
+}
+
+function providerOf(env: Env): Provider | null {
+  const p = env.PROVIDER || 'anthropic';
+  return PROVIDERS.has(p) ? (p as Provider) : null;
+}
+
+function apiKeyFor(env: Env, provider: Provider): string {
+  return (provider === 'openai' ? env.OPENAI_API_KEY : provider === 'deepseek' ? env.DEEPSEEK_API_KEY : env.ANTHROPIC_API_KEY) ?? '';
+}
+
+/** One answer shaped by `schema` from `provider`. Throws CompletionError, or the provider SDK's own error. */
+function complete(env: Env, provider: Provider, args: CompleteArgs): Promise<Completion> {
+  if (provider === 'openai') return completeOpenAI(env, args);
+  if (provider === 'deepseek') return completeDeepSeek(env, args);
+  return completeAnthropic(env, args);
+}
+
+/** Anthropic: structured outputs through output_config.format, behind the region retry. */
+async function completeAnthropic(env: Env, a: CompleteArgs): Promise<Completion> {
+  const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, maxRetries: 1 });
+  const res = await withRegionRetry(() =>
+    client.messages.create({
+      model: env.MODEL || 'claude-sonnet-5-5',
+      max_tokens: a.maxTokens,
+      system: a.system,
+      output_config: { effort: a.effort, format: zodOutputFormat(a.schema) },
+      messages: [{ role: 'user', content: anthropicContent(a) }],
+    }),
+  );
+  if (res.stop_reason === 'refusal') throw new CompletionError('refused');
   if (res.stop_reason !== 'end_turn') {
     console.error('anthropic_incomplete', res.stop_reason);
-    return json({ error: 'incomplete', stop_reason: res.stop_reason }, 502, cors);
+    throw new CompletionError('incomplete', { stop_reason: res.stop_reason });
   }
   const text = res.content
     .filter((b): b is Extract<typeof b, { type: 'text' }> => b.type === 'text')
     .map((b) => b.text)
     .join('');
-  let parsed: ReturnType<typeof schema.safeParse> | null = null;
+  let raw: unknown;
   try {
-    parsed = schema.safeParse(JSON.parse(text));
+    raw = JSON.parse(text);
   } catch {
-    parsed = null;
-  }
-  if (!parsed || !parsed.success) {
     console.error('anthropic_unparseable', text.length);
-    return json({ error: 'unparseable' }, 502, cors);
+    throw new CompletionError('unparseable');
   }
-  const payload = wrap(parsed.data as Record<string, unknown>);
+  return { data: validated(a.schema, raw, 'anthropic'), model: res.model, usage: usageOf(res.usage) };
+}
+
+/**
+ * DeepSeek through its Anthropic-compatible endpoint (api-docs.deepseek.com/guides/anthropic_api): the same SDK
+ * and request shape, but no output_config.format, so the schema is offered as the only tool and the answer is
+ * read back from the forced tool call. No region retry: that block is Anthropic's.
+ * Price note: DeepSeek charges double between 01:00–04:00 and 06:00–10:00 UTC on weekdays (lunch and dinner
+ * time in Sydney); all other hours, weekends and Chinese public holidays are the cheap rate.
+ */
+async function completeDeepSeek(env: Env, a: CompleteArgs): Promise<Completion> {
+  const client = new Anthropic({ apiKey: env.DEEPSEEK_API_KEY, baseURL: 'https://api.deepseek.com/anthropic', maxRetries: 1 });
+  const input_schema = toolSchema(a.schema);
+  const spent = { input_tokens: 0, output_tokens: 0 };
+  // Now and then the model answers in prose or leaves a field out; one more try usually fixes it.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const res = await client.messages.create({
+      model: env.DEEPSEEK_MODEL || 'deepseek-flash',
+      max_tokens: a.maxTokens,
+      system: a.system,
+      output_config: { effort: a.effort },
+      tools: [{ name: 'result', description: 'Return the result', input_schema }],
+      // deepseek-flash thinks by default and then refuses tool_choice "tool" ("Thinking mode does not support
+      // this tool_choice"); "any" with a single tool forces the same call and keeps thinking, so effort applies.
+      tool_choice: { type: 'any' },
+      messages: [{ role: 'user', content: anthropicContent(a) }],
+    });
+    const used = usageOf(res.usage);
+    spent.input_tokens += used.input_tokens;
+    spent.output_tokens += used.output_tokens;
+    if (res.stop_reason === 'refusal') throw new CompletionError('refused');
+    // Only a finished answer is worth a second try; max_tokens, or any stop reason DeepSeek adds, is a truncation.
+    if (res.stop_reason !== 'tool_use' && res.stop_reason !== 'end_turn') {
+      console.error('deepseek_incomplete', res.stop_reason);
+      throw new CompletionError('incomplete', { stop_reason: res.stop_reason });
+    }
+    const call = res.content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
+    const parsed = call ? a.schema.safeParse(call.input) : null;
+    if (parsed?.success) return { data: parsed.data as Record<string, unknown>, model: res.model, usage: spent };
+    console.error('deepseek_unparseable', attempt, call ? 'invalid_input' : `no_tool_use:${res.stop_reason}`);
+  }
+  throw new CompletionError('unparseable');
+}
+
+/** OpenAI Responses API: structured outputs through text.format (strict JSON schema), images as data URLs. */
+async function completeOpenAI(env: Env, a: CompleteArgs): Promise<Completion> {
+  const client = new OpenAI({ apiKey: env.OPENAI_API_KEY, maxRetries: 1 });
+  const content: OpenAI.Responses.ResponseInputContent[] = [{ type: 'input_text', text: a.text }];
+  if (a.image) content.push({ type: 'input_image', image_url: `data:${a.image.mediaType};base64,${a.image.data}`, detail: 'auto' });
+  let res: OpenAI.Responses.ParsedResponse<unknown>;
+  try {
+    res = await client.responses.parse({
+      model: env.OPENAI_MODEL || 'gpt-6.1-sol',
+      instructions: a.system,
+      input: [{ role: 'user', content }],
+      text: { format: zodTextFormat(a.schema, 'result') },
+      reasoning: { effort: a.effort },
+      max_output_tokens: a.maxTokens,
+      // Nothing is kept on OpenAI's side: the phone is the only store for photos and meals.
+      store: false,
+    });
+  } catch (e) {
+    // The SDK checks the answer against the schema while parsing; a mismatch is a bad answer, not an API failure.
+    if (e instanceof z.ZodError || e instanceof SyntaxError) {
+      console.error('openai_unparseable', e.message.slice(0, 200));
+      throw new CompletionError('unparseable');
+    }
+    throw e;
+  }
+  if (res.status === 'incomplete') {
+    const reason = res.incomplete_details?.reason ?? 'incomplete';
+    if (reason === 'content_filter') throw new CompletionError('refused');
+    console.error('openai_incomplete', reason);
+    throw new CompletionError('incomplete', { stop_reason: reason });
+  }
+  if (res.status !== 'completed') {
+    // 'failed' (or a status added later): a policy code is a refusal, anything else an upstream failure. Codes only.
+    const code = String(res.error?.code ?? res.status ?? 'unknown');
+    console.error('openai_failed', res.status, code);
+    if (/policy|moderation/i.test(code)) throw new CompletionError('refused');
+    throw new CompletionError('upstream', { detail: code });
+  }
+  if (res.output.some((item) => item.type === 'message' && item.content.some((c) => c.type === 'refusal'))) throw new CompletionError('refused');
+  if (res.output_parsed == null) {
+    console.error('openai_unparseable', 'no_output');
+    throw new CompletionError('unparseable');
+  }
+  return { data: validated(a.schema, res.output_parsed, 'openai'), model: res.model, usage: usageOf(res.usage) };
+}
+
+function anthropicContent(a: CompleteArgs): string | Anthropic.ContentBlockParam[] {
+  if (!a.image) return a.text;
+  return [
+    { type: 'image', source: { type: 'base64', media_type: a.image.mediaType, data: a.image.data } },
+    { type: 'text', text: a.text },
+  ];
+}
+
+/** A tool input_schema for a zod schema: zod's own JSON schema (every field required, no extra keys) minus the draft marker. */
+function toolSchema(schema: z.ZodTypeAny): Anthropic.Tool.InputSchema {
+  const json = z.toJSONSchema(schema) as Record<string, unknown>;
+  delete json.$schema;
+  return json as Anthropic.Tool.InputSchema;
+}
+
+/** The answer checked against the route's zod schema, or 'unparseable'. */
+function validated(schema: z.ZodTypeAny, raw: unknown, tag: string): Record<string, unknown> {
+  const parsed = schema.safeParse(raw);
+  if (!parsed.success) {
+    console.error(`${tag}_unparseable`, 'schema');
+    throw new CompletionError('unparseable');
+  }
+  return parsed.data as Record<string, unknown>;
+}
+
+function usageOf(u: { input_tokens: number; output_tokens: number } | null | undefined): Completion['usage'] {
+  return { input_tokens: u?.input_tokens ?? 0, output_tokens: u?.output_tokens ?? 0 };
+}
+
+/** The JSON the app expects: the route's own wrapping of the answer, plus which model answered and what it used. */
+function finish(res: Completion, cors: Record<string, string> | null, wrap: (data: Record<string, unknown>) => Record<string, unknown>): Response {
+  const payload = wrap(res.data);
   payload.model = res.model;
-  payload.usage = { input_tokens: res.usage.input_tokens, output_tokens: res.usage.output_tokens };
+  payload.usage = res.usage;
   return json(payload, 200, cors);
+}
+
+/** A provider failure as the app's error codes. Logs status and message only: never the request body, image or headers. */
+function errorResponse(e: unknown, cors: Record<string, string> | null): Response {
+  if (e instanceof CompletionError) return json({ error: e.code, ...e.extra }, e.code === 'refused' ? 422 : 502, cors);
+  const auth = e instanceof Anthropic.AuthenticationError || e instanceof OpenAI.AuthenticationError;
+  // An auth error is logged as its status only: OpenAI's and DeepSeek's messages quote part of the key.
+  console.error('provider_error', e instanceof Anthropic.APIError || e instanceof OpenAI.APIError ? e.status : '', auth ? 'authentication' : e instanceof Error ? e.message : String(e));
+  if (auth) return json({ error: 'misconfigured' }, 500, cors);
+  // An exhausted OpenAI balance comes back as a 429; it is a configuration problem, not a burst to wait out.
+  if (e instanceof OpenAI.RateLimitError && e.code === 'insufficient_quota') return json({ error: 'misconfigured' }, 500, cors);
+  if (e instanceof Anthropic.RateLimitError || e instanceof OpenAI.RateLimitError) return json({ error: 'rate_limited' }, 429, cors);
+  // A photo the provider's policy declines is a 400 (OpenAI: *_policy_violation codes; DeepSeek: "Content Exists Risk").
+  if (e instanceof Anthropic.BadRequestError || e instanceof OpenAI.BadRequestError) {
+    const what = `${e instanceof OpenAI.APIError ? (e.code ?? '') : ''} ${e.message}`;
+    if (/policy|content exists risk/i.test(what)) return json({ error: 'refused' }, 422, cors);
+  }
+  if (e instanceof Anthropic.APIError || e instanceof OpenAI.APIError) return json({ error: 'upstream', status: e.status, detail: String(e.message ?? '').slice(0, 300) }, 502, cors);
+  return json({ error: 'upstream' }, 502, cors);
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {

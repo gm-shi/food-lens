@@ -9,6 +9,7 @@ preview_urls = false
 
 # Run close to the Anthropic API rather than close to the phone: outbound requests from some
 # Cloudflare locations are refused by Anthropic's region check ("Request not allowed").
+# Only matters with PROVIDER = "anthropic"; harmless for the others.
 [placement]
 mode = "smart"
 
@@ -16,9 +17,18 @@ mode = "smart"
 [observability]
 enabled = true
 
-# Non-secret config. Secrets (ANTHROPIC_API_KEY, APP_PASSCODE) come from
-# `.dev.vars` locally and from `wrangler secret bulk .dev.vars` in production.
+# Non-secret config. Secrets (APP_PASSCODE and the key of the chosen provider: ANTHROPIC_API_KEY,
+# OPENAI_API_KEY or DEEPSEEK_API_KEY) come from `.dev.vars` locally and from
+# `wrangler secret bulk .dev.vars` (npm run secrets) in production.
 [vars]
 ALLOWED_ORIGINS = "https://gm-shi.github.io,http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173"
+# Which API answers by default: "anthropic" (uses MODEL), "openai" (OPENAI_MODEL) or "deepseek" (DEEPSEEK_MODEL).
+# The app may name one of the three per request (`provider` in the body). `npx wrangler dev --var PROVIDER:openai`
+# tries another default locally without editing this file.
+PROVIDER = "deepseek"
 MODEL = "claude-sonnet-5-5"
+OPENAI_MODEL = "gpt-6.1-sol"
+DEEPSEEK_MODEL = "deepseek-flash"
+# Reasoning effort for photo, text and label analysis (low, medium, high; DeepSeek treats medium as high).
+# The other routes always use low.
 EFFORT = "medium"

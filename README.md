@@ -5,17 +5,19 @@ A small, calm pregnancy food diary for a few people in New South Wales, Australi
 **Not medical advice.** Targets are the population reference values for pregnancy; a doctor or midwife may set different ones, and every target is editable in Settings. Micronutrients estimated from photos are rough; the weekly trend is what matters.
 
 - **App**: Vite + React PWA, hosted on GitHub Pages. Data lives in the phone's IndexedDB with JSON export/import.
-- **Worker**: a tiny Cloudflare Worker that holds the Anthropic API key and forwards one photo per request to Claude. Access is gated by a shared passcode.
+- **Worker**: a tiny Cloudflare Worker that holds the LLM API key and forwards one request at a time to the configured provider (DeepSeek by default; Claude or OpenAI with one config change or per request, see "Provider" below). Access is gated by a shared passcode.
 
 ## One-time setup
 
-1. **Anthropic key** — create one at console.anthropic.com and set a monthly spend limit.
-2. **Secrets file** — put the key and a passcode of your choice in `worker/.dev.vars` (gitignored). Use plain ASCII letters and digits for the passcode; it travels in an HTTP header.
+1. **API key** — create one for the provider you will use (console.anthropic.com, platform.openai.com or platform.deepseek.com) and set a monthly spend limit where the console offers one.
+2. **Secrets file** — put the key and a passcode of your choice in `worker/.dev.vars` (gitignored). Use plain ASCII letters and digits for the passcode; it travels in an HTTP header. Only the key of the provider named by `PROVIDER` is needed; the other lines can be left out.
    ```
    ANTHROPIC_API_KEY=sk-ant-...
+   OPENAI_API_KEY=sk-...
+   DEEPSEEK_API_KEY=sk-...
    APP_PASSCODE=your-passcode
    ```
-3. **Cloudflare** — in `worker/`: `npx wrangler login`, then `npm run deploy` and `npm run secrets` (uploads both lines as encrypted secrets). Note the printed `*.workers.dev` URL.
+3. **Cloudflare** — in `worker/`: `npx wrangler login`, then `npm run deploy` and `npm run secrets` (uploads every line of `.dev.vars` as an encrypted secret). Note the printed `*.workers.dev` URL.
 4. **Worker URL** — paste that URL into `.env.production` as `VITE_WORKER_URL=...` and make sure `ALLOWED_ORIGINS` in `worker/wrangler.toml` contains your GitHub Pages origin.
 5. **GitHub Pages** — create the public repo, open Settings → Pages and set Source to "GitHub Actions", then push to `main`. The workflow in `.github/workflows/deploy.yml` builds and publishes on every push (or run it from the Actions tab).
 
@@ -32,6 +34,18 @@ npm run dev                  # App on http://localhost:5174/food-lens/
 `npm run build` type-checks and builds the app. `cd worker && npm run typecheck` checks the Worker.
 
 Upgrading: deploy the Worker first (`cd worker && npm run deploy`), then push to `main`. The Worker keeps a `calories` alias in its response so an older app build keeps working during the switch.
+
+## Provider
+
+The Worker's default LLM provider is `PROVIDER` in `worker/wrangler.toml` (`[vars]`), and a request may name one of the three itself (`provider` in the JSON body; this is what an in-app model switch sends). Every route answers in the same shape whichever is active. A named provider whose key has not been uploaded answers `misconfigured` rather than quietly using another one.
+
+| `PROVIDER` | Model var (default) | Secret | How the schema-shaped answer is produced |
+|---|---|---|---|
+| `anthropic` | `MODEL` (`claude-sonnet-5-5`) | `ANTHROPIC_API_KEY` | Structured outputs (`output_config.format`), with the region retry that `[placement]` is there for |
+| `openai` | `OPENAI_MODEL` (`gpt-6.1-sol`) | `OPENAI_API_KEY` | Responses API with a strict JSON schema (`text.format`); `store: false`, so nothing is kept on OpenAI's side |
+| `deepseek` | `DEEPSEEK_MODEL` (`deepseek-flash`) | `DEEPSEEK_API_KEY` | Anthropic-compatible endpoint; the schema is offered as the only tool and the forced tool call is validated (one retry) |
+
+`EFFORT` (`low`, `medium`, `high`) applies to photo, text and label analysis on all three (DeepSeek has no medium tier and treats `medium` as `high`); the other routes always use `low`. To switch: put the key in `worker/.dev.vars`, run `npm run secrets`, change `PROVIDER` (and the model var if you like), then `npm run deploy`. Switching back is the same one-line change. Locally, `npx wrangler dev --var PROVIDER:openai` tries a provider without editing the file. DeepSeek processes the photos and text it receives on servers in mainland China, so choose it with that in mind.
 
 ## Reference values
 
@@ -52,8 +66,17 @@ All values were checked against those pages on 2026-10-14.
 - `POST /recommend` — the meal slot (`breakfast`, `lunch`, `snack`, `dinner`; derived from `hour` when absent), 7-day averages, today's totals, targets, meals, mood and gestational-diabetes limits → three ideas for that meal with reasons. Fetched once per slot per phone and cached.
 - `POST /weekly` — one Monday-to-Sunday week: averages over the logged days against targets, the previous week's averages, weight at the start and end, mood, safety notes → a headline, a two-to-three-sentence summary and two or three focus points. Written once per finished week per phone (on request for the current week) and cached.
 
-All routes need the `x-app-passcode` header and an allowed `Origin`.
+All routes need the `x-app-passcode` header and an allowed `Origin`. An optional `provider` field in the body (`anthropic`, `openai` or `deepseek`) overrides the Worker's default `PROVIDER` for that request.
 
 ## Costs
 
-Roughly 2,800 input and 800 output tokens per photo (14 nutrients per item), about 1,100 / 130 for an item correction, about 1,500 / 230 for each set of meal ideas (up to four a day), and about 1,600 / 300 for a weekly summary. With Claude Sonnet 5.5 that is around $0.01 per photo and a few cents a day for the rest. The model and effort are set in `worker/wrangler.toml`.
+Token counts (input / output) measured on the Worker's routes on 2026-10-25; output includes the model's reasoning where the provider counts it. The photo was a 640 px test image: the app's 1,024 px photos add roughly 750 input tokens on OpenAI, and DeepSeek caps an image at 1,024 tokens. Prices are from developers.openai.com/api/docs/pricing and api-docs.deepseek.com/quick_start/pricing on the same day.
+
+| `PROVIDER` / model | Price per 1M tokens (in / out) | Photo (`/analyze`) | Text (`/analyze`) | Item, meal ideas, weekly summary, label |
+|---|---|---|---|---|
+| `anthropic` / Claude Sonnet 5.5 | see platform.claude.com | about 2,800 / 800, around $0.01 | similar | about 1,100 / 130, 1,500 / 230 and 1,600 / 300; a few cents a day |
+| `openai` / `gpt-6.1-sol` | $2 / $10 | 1,676 / 477 measured, about 2,400 / 500 at 1,024 px: around $0.01 | 1,222 / 736, around $0.01 | 900–1,250 / 100–230 each, around $0.003–0.005 |
+| `openai` / `gpt-6-luna` (set `OPENAI_MODEL`) | $0.10 / $0.50 | not measured; at the same token counts around $0.0005 | | |
+| `deepseek` / `deepseek-flash` | $0.15 / $0.60 off-peak, double at peak | 1,882 / 1,296 (thinking included), around $0.001 off-peak | 1,400 (mostly cache hits) / 840, around $0.0006 | 1,300–1,500 / 300–600 each, around $0.0005 |
+
+DeepSeek bills the repeated system prompt as a cache hit ($0.003 per 1M), and its peak hours are 01:00–04:00 and 06:00–10:00 UTC on weekdays (lunch and dinner time in Sydney); weekends, Chinese public holidays and all other hours are off-peak. `EFFORT` and the models are set in `worker/wrangler.toml`.
