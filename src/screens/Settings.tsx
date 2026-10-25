@@ -8,7 +8,7 @@ import { clearWeekly } from '../lib/weekly';
 import { CameraIcon } from '../components/Icons';
 import { NUTRIENTS, type NutrientKey } from '../lib/nutrients';
 import { usePregnancy } from '../lib/hooks';
-import { GDM_DEFAULTS, setOverride, updateSettings, useSettings, type Activity, type Gdm, type Profile, type Settings } from '../lib/settings';
+import { GDM_DEFAULTS, PROVIDERS, setOverride, updateSettings, useSettings, type Activity, type Gdm, type Profile, type Provider, type Settings } from '../lib/settings';
 import { useT, type Lang, type TKey } from '../i18n';
 import { TrashIcon } from '../components/Icons';
 
@@ -30,6 +30,8 @@ interface Backup {
 
 const SUPP_KEYS: NutrientKey[] = ['folate', 'iodine', 'iron', 'calcium', 'vitD', 'dha', 'vitC', 'vitA'];
 const EMPTY_PROFILE: Profile = { dueDate: '', age: 0, heightCm: 0, prePregnancyKg: 0, activity: 'moderate' };
+/** Product names, the same in both languages */
+const PROVIDER_NAMES: Record<Provider, string> = { deepseek: 'DeepSeek', anthropic: 'Claude', openai: 'GPT-6.1 Sol' };
 
 export default function Settings() {
   const t = useT();
@@ -384,6 +386,18 @@ export default function Settings() {
           <input type="text" autoComplete="off" autoCapitalize="off" spellCheck={false} value={s.passcode} onChange={(e) => updateSettings({ passcode: e.target.value })} className={`${input} w-32`} />
         </Row>
       </section>
+
+      <h2 className="mt-7 px-1 text-sm text-muted">{t('settings.model')}</h2>
+      <section className="mt-2 rounded-3xl bg-card p-3">
+        <div role="radiogroup" aria-label={t('settings.model')} className="flex rounded-full bg-bg p-0.5 text-sm">
+          {PROVIDERS.map((p) => (
+            <button key={p} type="button" role="radio" aria-checked={s.provider === p} onClick={() => updateSettings({ provider: p })} className={`flex-1 whitespace-nowrap rounded-full px-2 py-1.5 ${s.provider === p ? 'bg-card font-medium shadow-sm' : 'text-muted'}`}>
+              {PROVIDER_NAMES[p]}
+            </button>
+          ))}
+        </div>
+      </section>
+      <p className="mt-2 px-1 text-xs leading-relaxed text-muted">{t('settings.modelHint')}</p>
 
       <h2 className="mt-7 px-1 text-sm text-muted">{t('settings.data')}</h2>
       <section className="mt-2 divide-y divide-line rounded-3xl bg-card">

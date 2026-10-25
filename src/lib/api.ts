@@ -1,6 +1,7 @@
 import type { Lang } from '../i18n';
 import type { AmountUnit, Confidence, FoodItem } from './db';
 import { NUTRIENT_KEYS, roundNutrient, type Nutrients } from './nutrients';
+import { getSettings } from './settings';
 import type { Trimester } from './targets';
 
 export interface Analysis {
@@ -24,7 +25,8 @@ const WORKER_URL = ((import.meta.env.VITE_WORKER_URL as string | undefined) ?? '
 /** HTTP header values must be printable ASCII; anything else can never match the Worker's passcode. */
 const ASCII = /^[\x20-\x7e]+$/;
 
-async function post(path: string, passcode: string, body: unknown): Promise<unknown> {
+/** POST `body` to the Worker. The phone's chosen AI model goes along as `provider` in every request. */
+async function post(path: string, passcode: string, body: object): Promise<unknown> {
   if (!WORKER_URL) throw new ApiError('config');
   const code = passcode.trim();
   if (!ASCII.test(code)) throw new ApiError('passcode');
@@ -33,7 +35,7 @@ async function post(path: string, passcode: string, body: unknown): Promise<unkn
     res = await fetch(`${WORKER_URL}${path}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-app-passcode': code },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ ...body, provider: getSettings().provider }),
     });
   } catch {
     throw new ApiError('network');
