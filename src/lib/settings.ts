@@ -4,6 +4,16 @@ import type { NutrientKey } from './nutrients';
 
 export type Activity = 'low' | 'moderate' | 'high';
 
+/** Which API the Worker asks on this phone's behalf: DeepSeek, Claude (anthropic) or GPT-6.1 Sol (openai). */
+export type Provider = 'deepseek' | 'anthropic' | 'openai';
+/** In the order the picker shows them; the first is the default. */
+export const PROVIDERS: readonly Provider[] = ['deepseek', 'anthropic', 'openai'];
+export const DEFAULT_PROVIDER: Provider = PROVIDERS[0];
+
+export function isProvider(v: unknown): v is Provider {
+  return typeof v === 'string' && (PROVIDERS as readonly string[]).includes(v);
+}
+
 export interface Profile {
   /** ISO date YYYY-MM-DD */
   dueDate: string;
@@ -36,6 +46,8 @@ export function gdmLimit(g: Gdm, kind: 'main' | 'snack'): number {
 
 export interface Settings {
   lang: Lang;
+  /** Sent as `provider` with every Worker request */
+  provider: Provider;
   passcode: string;
   onboarded: boolean;
   profile: Profile | null;
@@ -48,7 +60,7 @@ const KEY = 'food-lens:settings';
 
 function defaults(): Settings {
   const zh = typeof navigator !== 'undefined' && navigator.language.toLowerCase().startsWith('zh');
-  return { lang: zh ? 'zh' : 'en', passcode: '', onboarded: false, profile: null, overrides: {}, gdm: { ...GDM_DEFAULTS } };
+  return { lang: zh ? 'zh' : 'en', provider: DEFAULT_PROVIDER, passcode: '', onboarded: false, profile: null, overrides: {}, gdm: { ...GDM_DEFAULTS } };
 }
 
 function load(): Settings {
@@ -60,6 +72,7 @@ function load(): Settings {
     const g = { ...GDM_DEFAULTS, ...(saved.gdm ?? {}) };
     const s: Settings = { ...defaults(), ...saved, overrides: { ...(saved.overrides ?? {}) }, gdm: { ...g, mainCarbs: g.mainCarbs || GDM_DEFAULTS.mainCarbs, snackCarbs: g.snackCarbs || GDM_DEFAULTS.snackCarbs } };
     if (s.profile && (typeof s.profile.dueDate !== 'string' || !Number.isFinite(s.profile.heightCm))) s.profile = null;
+    if (!isProvider(s.provider)) s.provider = DEFAULT_PROVIDER;
     return s;
   } catch {
     return defaults();
@@ -95,6 +108,19 @@ function subscribe(l: () => void): () => void {
   return () => {
     listeners.delete(l);
   };
+}
+
+/** Collapsible groups on the Settings screen. */
+export type SettingsSection = 'profile' | 'targets' | 'supps';
+const openSections = new Map<SettingsSection, boolean>();
+
+/** Whether the user opened or closed a Settings section by hand this session; undefined if untouched. Not persisted. */
+export function isSectionOpen(id: SettingsSection): boolean | undefined {
+  return openSections.get(id);
+}
+
+export function setSectionOpen(id: SettingsSection, open: boolean): void {
+  openSections.set(id, open);
 }
 
 export function useSettings(): Settings {

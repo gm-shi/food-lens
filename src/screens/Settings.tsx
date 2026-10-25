@@ -5,10 +5,10 @@ import { ApiError, cleanItem, scanLabel } from '../lib/api';
 import { prepareImage } from '../lib/image';
 import { clearRecs } from '../lib/recs';
 import { clearWeekly } from '../lib/weekly';
-import { CameraIcon } from '../components/Icons';
+import { CameraIcon, ChevronIcon } from '../components/Icons';
 import { NUTRIENTS, type NutrientKey } from '../lib/nutrients';
 import { usePregnancy } from '../lib/hooks';
-import { GDM_DEFAULTS, setOverride, updateSettings, useSettings, type Activity, type Gdm, type Profile, type Settings } from '../lib/settings';
+import { GDM_DEFAULTS, PROVIDERS, isSectionOpen, setOverride, setSectionOpen, updateSettings, useSettings, type Activity, type Gdm, type Profile, type Provider, type Settings, type SettingsSection } from '../lib/settings';
 import { useT, type Lang, type TKey } from '../i18n';
 import { TrashIcon } from '../components/Icons';
 
@@ -30,6 +30,8 @@ interface Backup {
 
 const SUPP_KEYS: NutrientKey[] = ['folate', 'iodine', 'iron', 'calcium', 'vitD', 'dha', 'vitC', 'vitA'];
 const EMPTY_PROFILE: Profile = { dueDate: '', age: 0, heightCm: 0, prePregnancyKg: 0, activity: 'moderate' };
+/** Product names, the same in both languages */
+const PROVIDER_NAMES: Record<Provider, string> = { deepseek: 'DeepSeek', anthropic: 'Claude', openai: 'GPT-6.1 Sol' };
 
 export default function Settings() {
   const t = useT();
@@ -226,53 +228,55 @@ export default function Settings() {
     <div className="px-5" style={{ paddingTop: 'calc(env(safe-area-inset-top) + 24px)', paddingBottom: 'calc(env(safe-area-inset-bottom) + 112px)' }}>
       <h1 className="text-2xl font-semibold">{t('tab.settings')}</h1>
 
-      <h2 className="mt-5 px-1 text-sm text-muted">{t('settings.profile')}</h2>
-      <section className="mt-2 divide-y divide-line rounded-3xl bg-card">
-        <Row label={t('settings.dueDate')}>
-          <input type="date" value={profile.dueDate} onChange={(e) => patchProfile({ dueDate: e.target.value })} className={`${input} w-40`} />
-        </Row>
-        <Row label={t('settings.age')}>
-          <input type="number" inputMode="numeric" min={0} placeholder="30" value={profile.age || ''} onChange={(e) => patchProfile({ age: Math.round(Number(e.target.value) || 0) })} className={`${input} w-20`} />
-        </Row>
-        <Row label={`${t('settings.height')} (cm)`}>
-          <input type="number" inputMode="numeric" min={0} placeholder="160" value={profile.heightCm || ''} onChange={(e) => patchProfile({ heightCm: Math.round(Number(e.target.value) || 0) })} className={`${input} w-20`} />
-        </Row>
-        <Row label={`${t('settings.preKg')} (kg)`}>
-          <input type="number" inputMode="decimal" step={0.1} min={0} placeholder="55" value={profile.prePregnancyKg || ''} onChange={(e) => patchProfile({ prePregnancyKg: Math.round((Number(e.target.value) || 0) * 10) / 10 })} className={`${input} w-20`} />
-        </Row>
-        <Row label={t('settings.activity')}>
-          <div className="flex rounded-full bg-bg p-0.5 text-xs">
-            {(['low', 'moderate', 'high'] as Activity[]).map((a) => (
-              <button key={a} type="button" onClick={() => patchProfile({ activity: a })} className={`whitespace-nowrap rounded-full px-2.5 py-1.5 ${profile.activity === a ? 'bg-card font-medium shadow-sm' : 'text-muted'}`}>
-                {t(`activity.${a}`)}
-              </button>
-            ))}
-          </div>
-        </Row>
-      </section>
-
-      <h2 className="mt-7 px-1 text-sm text-muted">{t('settings.targets')}</h2>
-      <p className="mt-1 px-1 text-xs text-muted">{t('settings.targetsHint')}</p>
-      <section className="mt-2 divide-y divide-line rounded-3xl bg-card">
-        {preg.targets.map((tg) => (
-          <Row key={tg.key} label={`${t(`n.${tg.key}` as TKey)}${tg.kind === 'limit' ? ` · ${t('n.limit')}` : ''}`} hint={tg.overridden ? t('settings.reset') : undefined} onHint={tg.overridden ? () => setOverride(tg.key, undefined) : undefined}>
-            <label className="flex items-baseline gap-1">
-              <input
-                type="number"
-                inputMode="decimal"
-                min={0}
-                value={tg.value}
-                onChange={(e) => {
-                  if (e.target.value !== '') setOverride(tg.key, Number(e.target.value));
-                }}
-                onFocus={(e) => e.target.select()}
-                className={`${input} w-20 ${tg.overridden ? 'text-accent' : ''}`}
-              />
-              <span className="text-xs text-muted">{NUTRIENTS[tg.key].unit}</span>
-            </label>
+      <Section id="profile" title={t('settings.profile')} first defaultOpen={!profile.dueDate || !(profile.heightCm > 0) || !(profile.prePregnancyKg > 0)}>
+        <section className="mt-2 divide-y divide-line rounded-3xl bg-card">
+          <Row label={t('settings.dueDate')}>
+            <input type="date" value={profile.dueDate} onChange={(e) => patchProfile({ dueDate: e.target.value })} className={`${input} w-40`} />
           </Row>
-        ))}
-      </section>
+          <Row label={t('settings.age')}>
+            <input type="number" inputMode="numeric" min={0} placeholder="30" value={profile.age || ''} onChange={(e) => patchProfile({ age: Math.round(Number(e.target.value) || 0) })} className={`${input} w-20`} />
+          </Row>
+          <Row label={`${t('settings.height')} (cm)`}>
+            <input type="number" inputMode="numeric" min={0} placeholder="160" value={profile.heightCm || ''} onChange={(e) => patchProfile({ heightCm: Math.round(Number(e.target.value) || 0) })} className={`${input} w-20`} />
+          </Row>
+          <Row label={`${t('settings.preKg')} (kg)`}>
+            <input type="number" inputMode="decimal" step={0.1} min={0} placeholder="55" value={profile.prePregnancyKg || ''} onChange={(e) => patchProfile({ prePregnancyKg: Math.round((Number(e.target.value) || 0) * 10) / 10 })} className={`${input} w-20`} />
+          </Row>
+          <Row label={t('settings.activity')}>
+            <div className="flex rounded-full bg-bg p-0.5 text-xs">
+              {(['low', 'moderate', 'high'] as Activity[]).map((a) => (
+                <button key={a} type="button" onClick={() => patchProfile({ activity: a })} className={`whitespace-nowrap rounded-full px-2.5 py-1.5 ${profile.activity === a ? 'bg-card font-medium shadow-sm' : 'text-muted'}`}>
+                  {t(`activity.${a}`)}
+                </button>
+              ))}
+            </div>
+          </Row>
+        </section>
+      </Section>
+
+      <Section id="targets" title={t('settings.targets')}>
+        <p className="mt-1 px-1 text-xs text-muted">{t('settings.targetsHint')}</p>
+        <section className="mt-2 divide-y divide-line rounded-3xl bg-card">
+          {preg.targets.map((tg) => (
+            <Row key={tg.key} label={`${t(`n.${tg.key}` as TKey)}${tg.kind === 'limit' ? ` · ${t('n.limit')}` : ''}`} hint={tg.overridden ? t('settings.reset') : undefined} onHint={tg.overridden ? () => setOverride(tg.key, undefined) : undefined}>
+              <label className="flex items-baseline gap-1">
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  min={0}
+                  value={tg.value}
+                  onChange={(e) => {
+                    if (e.target.value !== '') setOverride(tg.key, Number(e.target.value));
+                  }}
+                  onFocus={(e) => e.target.select()}
+                  className={`${input} w-20 ${tg.overridden ? 'text-accent' : ''}`}
+                />
+                <span className="text-xs text-muted">{NUTRIENTS[tg.key].unit}</span>
+              </label>
+            </Row>
+          ))}
+        </section>
+      </Section>
 
       <h2 className="mt-7 px-1 text-sm text-muted">{t('settings.gdm')}</h2>
       <p className="mt-1 px-1 text-xs text-muted">{t('settings.gdmHint')}</p>
@@ -320,55 +324,56 @@ export default function Settings() {
         )}
       </section>
 
-      <h2 className="mt-7 px-1 text-sm text-muted">{t('settings.supps')}</h2>
-      <p className="mt-1 px-1 text-xs text-muted">{t('settings.suppHint')}</p>
-      <section className="mt-2 space-y-2">
-        {supplements.map((sp) => (
-          <div key={`${sp.id}-${cardVersion[sp.id] ?? 0}`} className="rounded-3xl bg-card p-4">
-            <div className="flex items-center gap-3">
-              <input
-                type="text"
-                defaultValue={sp.name}
-                placeholder={t('supp.multi')}
-                onChange={(e) => void db.supplements.update(sp.id, { name: e.target.value.slice(0, 60) })}
-                className="min-w-0 flex-1 rounded-lg bg-bg px-3 py-1.5 outline-none placeholder:text-muted"
-              />
-              <button type="button" role="switch" aria-checked={sp.enabled} onClick={() => void db.supplements.update(sp.id, { enabled: !sp.enabled })} className={`relative h-6 w-10 rounded-full transition-colors ${sp.enabled ? 'bg-accent' : 'bg-line'}`}>
-                <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-card transition-[left] ${sp.enabled ? 'left-[18px]' : 'left-0.5'}`} />
+      <Section id="supps" title={t('settings.supps')}>
+        <p className="mt-1 px-1 text-xs text-muted">{t('settings.suppHint')}</p>
+        <section className="mt-2 space-y-2">
+          {supplements.map((sp) => (
+            <div key={`${sp.id}-${cardVersion[sp.id] ?? 0}`} className="rounded-3xl bg-card p-4">
+              <div className="flex items-center gap-3">
+                <input
+                  type="text"
+                  defaultValue={sp.name}
+                  placeholder={t('supp.multi')}
+                  onChange={(e) => void db.supplements.update(sp.id, { name: e.target.value.slice(0, 60) })}
+                  className="min-w-0 flex-1 rounded-lg bg-bg px-3 py-1.5 outline-none placeholder:text-muted"
+                />
+                <button type="button" role="switch" aria-checked={sp.enabled} onClick={() => void db.supplements.update(sp.id, { enabled: !sp.enabled })} className={`relative h-6 w-10 rounded-full transition-colors ${sp.enabled ? 'bg-accent' : 'bg-line'}`}>
+                  <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-card transition-[left] ${sp.enabled ? 'left-[18px]' : 'left-0.5'}`} />
+                </button>
+                <button type="button" aria-label={t('settings.delete')} onClick={() => void removeSupplement(sp.id)} className="p-1 text-muted">
+                  <TrashIcon width={18} height={18} />
+                </button>
+              </div>
+              <button type="button" onClick={() => startScan(sp.id)} disabled={scanState?.busy} className="mt-3 flex items-center gap-1.5 text-sm text-accent disabled:opacity-60">
+                <CameraIcon width={16} height={16} /> {t('settings.scan')}
               </button>
-              <button type="button" aria-label={t('settings.delete')} onClick={() => void removeSupplement(sp.id)} className="p-1 text-muted">
-                <TrashIcon width={18} height={18} />
-              </button>
+              {scanState?.id === sp.id && <p className="mt-1 text-xs text-muted">{scanState.text}</p>}
+              <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2">
+                {SUPP_KEYS.map((k) => (
+                  <label key={k} className="flex items-center justify-between gap-2 text-sm">
+                    <span className="text-muted">{t(`n.${k}` as TKey)}</span>
+                    <span className="flex items-baseline gap-1">
+                      <input
+                        type="number"
+                        inputMode="decimal"
+                        min={0}
+                        placeholder="0"
+                        defaultValue={sp.nutrients[k] || ''}
+                        onChange={(e) => void db.supplements.update(sp.id, { [`nutrients.${k}`]: Math.max(0, Number(e.target.value) || 0) } as Partial<Supplement>)}
+                        className={`${input} w-16`}
+                      />
+                      <span className="w-6 text-xs text-muted">{NUTRIENTS[k].unit}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
             </div>
-            <button type="button" onClick={() => startScan(sp.id)} disabled={scanState?.busy} className="mt-3 flex items-center gap-1.5 text-sm text-accent disabled:opacity-60">
-              <CameraIcon width={16} height={16} /> {t('settings.scan')}
-            </button>
-            {scanState?.id === sp.id && <p className="mt-1 text-xs text-muted">{scanState.text}</p>}
-            <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2">
-              {SUPP_KEYS.map((k) => (
-                <label key={k} className="flex items-center justify-between gap-2 text-sm">
-                  <span className="text-muted">{t(`n.${k}` as TKey)}</span>
-                  <span className="flex items-baseline gap-1">
-                    <input
-                      type="number"
-                      inputMode="decimal"
-                      min={0}
-                      placeholder="0"
-                      defaultValue={sp.nutrients[k] || ''}
-                      onChange={(e) => void db.supplements.update(sp.id, { [`nutrients.${k}`]: Math.max(0, Number(e.target.value) || 0) } as Partial<Supplement>)}
-                      className={`${input} w-16`}
-                    />
-                    <span className="w-6 text-xs text-muted">{NUTRIENTS[k].unit}</span>
-                  </span>
-                </label>
-              ))}
-            </div>
-          </div>
-        ))}
-        <button type="button" onClick={() => void addSupplement()} className="w-full rounded-3xl border border-dashed border-line py-3 text-sm text-accent">
-          + {t('settings.suppAdd')}
-        </button>
-      </section>
+          ))}
+          <button type="button" onClick={() => void addSupplement()} className="w-full rounded-3xl border border-dashed border-line py-3 text-sm text-accent">
+            + {t('settings.suppAdd')}
+          </button>
+        </section>
+      </Section>
 
       <section className="mt-7 divide-y divide-line rounded-3xl bg-card">
         <Row label={t('settings.language')}>
@@ -384,6 +389,18 @@ export default function Settings() {
           <input type="text" autoComplete="off" autoCapitalize="off" spellCheck={false} value={s.passcode} onChange={(e) => updateSettings({ passcode: e.target.value })} className={`${input} w-32`} />
         </Row>
       </section>
+
+      <h2 className="mt-7 px-1 text-sm text-muted">{t('settings.model')}</h2>
+      <section className="mt-2 rounded-3xl bg-card p-3">
+        <div role="radiogroup" aria-label={t('settings.model')} className="flex rounded-full bg-bg p-0.5 text-sm">
+          {PROVIDERS.map((p) => (
+            <button key={p} type="button" role="radio" aria-checked={s.provider === p} onClick={() => updateSettings({ provider: p })} className={`flex-1 whitespace-nowrap rounded-full px-2 py-1.5 ${s.provider === p ? 'bg-card font-medium shadow-sm' : 'text-muted'}`}>
+              {PROVIDER_NAMES[p]}
+            </button>
+          ))}
+        </div>
+      </section>
+      <p className="mt-2 px-1 text-xs leading-relaxed text-muted">{t('settings.modelHint')}</p>
 
       <h2 className="mt-7 px-1 text-sm text-muted">{t('settings.data')}</h2>
       <section className="mt-2 divide-y divide-line rounded-3xl bg-card">
@@ -431,6 +448,29 @@ function cleanNutrients(n: unknown): Supplement['nutrients'] {
     if (k in NUTRIENTS && typeof v === 'number' && Number.isFinite(v) && v >= 0) out[k as NutrientKey] = v;
   }
   return out;
+}
+
+/**
+ * A collapsible group of settings: the muted heading toggles it. Closed unless `defaultOpen` or opened before;
+ * a choice made by hand is kept for the session (see setSectionOpen), so coming back finds it as it was left.
+ */
+function Section({ id, title, first, defaultOpen, children }: { id: SettingsSection; title: string; first?: boolean; defaultOpen?: boolean; children: React.ReactNode }) {
+  const [open, setOpen] = useState(isSectionOpen(id) ?? Boolean(defaultOpen));
+  function toggle() {
+    setSectionOpen(id, !open);
+    setOpen(!open);
+  }
+  return (
+    <>
+      <h2 className={first ? 'mt-5' : 'mt-7'}>
+        <button type="button" aria-expanded={open} onClick={toggle} className="-my-1 flex w-full items-center justify-between py-1 pl-1 pr-2 text-sm text-muted">
+          <span>{title}</span>
+          <ChevronIcon width={16} height={16} className={`transition-transform ${open ? 'rotate-90' : ''}`} />
+        </button>
+      </h2>
+      {open && children}
+    </>
+  );
 }
 
 function Row({ label, hint, onHint, children }: { label: string; hint?: string; onHint?: () => void; children: React.ReactNode }) {

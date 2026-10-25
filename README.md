@@ -39,13 +39,15 @@ Upgrading: deploy the Worker first (`cd worker && npm run deploy`), then push to
 
 The Worker's default LLM provider is `PROVIDER` in `worker/wrangler.toml` (`[vars]`), and a request may name one of the three itself (`provider` in the JSON body; this is what an in-app model switch sends). Every route answers in the same shape whichever is active. A named provider whose key has not been uploaded answers `misconfigured` rather than quietly using another one.
 
+In the app, Settings → AI model picks the provider for that phone (DeepSeek, Claude or GPT-6.1 Sol; DeepSeek until changed) and sends it as `provider` with every request, so `PROVIDER` only applies to requests without that field (older app builds, curl).
+
 | `PROVIDER` | Model var (default) | Secret | How the schema-shaped answer is produced |
 |---|---|---|---|
 | `anthropic` | `MODEL` (`claude-sonnet-5-5`) | `ANTHROPIC_API_KEY` | Structured outputs (`output_config.format`), with the region retry that `[placement]` is there for |
 | `openai` | `OPENAI_MODEL` (`gpt-6.1-sol`) | `OPENAI_API_KEY` | Responses API with a strict JSON schema (`text.format`); `store: false`, so nothing is kept on OpenAI's side |
 | `deepseek` | `DEEPSEEK_MODEL` (`deepseek-flash`) | `DEEPSEEK_API_KEY` | Anthropic-compatible endpoint; the schema is offered as the only tool and the forced tool call is validated (one retry) |
 
-`EFFORT` (`low`, `medium`, `high`) applies to photo, text and label analysis on all three (DeepSeek has no medium tier and treats `medium` as `high`); the other routes always use `low`. To switch: put the key in `worker/.dev.vars`, run `npm run secrets`, change `PROVIDER` (and the model var if you like), then `npm run deploy`. Switching back is the same one-line change. Locally, `npx wrangler dev --var PROVIDER:openai` tries a provider without editing the file. DeepSeek processes the photos and text it receives on servers in mainland China, so choose it with that in mind.
+`EFFORT` (`low`, `medium`, `high`) applies to photo, text and label analysis on all three (DeepSeek has no medium tier and treats `medium` as `high`); the other routes always use `low`. To make a provider available: put its key in `worker/.dev.vars`, run `npm run secrets` (change its model var if you like), then `npm run deploy`; switching between available providers happens in the app's Settings, and changing `PROVIDER` only moves the fallback. Locally, `npx wrangler dev --var PROVIDER:openai` tries another fallback without editing the file. DeepSeek processes the photos and text it receives on servers in mainland China, so choose it with that in mind.
 
 ## Reference values
 
