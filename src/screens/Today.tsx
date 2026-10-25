@@ -4,7 +4,7 @@ import { db, localDateKey, type Meal } from '../lib/db';
 import { fmt } from '../lib/nutrients';
 import { addNote, deleteNote, setSupplementTaken, updateNote, useDay, useDayNotes, usePregnancy, useWeekAverage } from '../lib/hooks';
 import { DISPLAY_ORDER, PRIORITY, expectedGain } from '../lib/targets';
-import { gdmLimit, useSettings } from '../lib/settings';
+import { gdmLimit, setSectionOpen, useSettings } from '../lib/settings';
 import { ApiError, recommend, type Recommendation } from '../lib/api';
 import { loadRecs, markAttempted, saveRecs, slotKeyOf, slotOfKey, wasAttempted } from '../lib/recs';
 import { MOODS } from '../lib/moods';
@@ -279,7 +279,14 @@ export default function Today({ onPick, onText, onEdit, onOpenSettings }: Props)
       </section>
 
       {day.supplements.length === 0 ? (
-        <button type="button" onClick={onOpenSettings} className="mt-3 w-full py-1 text-center text-xs text-muted">
+        <button
+          type="button"
+          onClick={() => {
+            setSectionOpen('supps', true);
+            onOpenSettings();
+          }}
+          className="mt-3 w-full py-1 text-center text-xs text-muted"
+        >
           {t('today.addSupps')}
         </button>
       ) : (

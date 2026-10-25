@@ -110,6 +110,19 @@ function subscribe(l: () => void): () => void {
   };
 }
 
+/** Collapsible groups on the Settings screen. */
+export type SettingsSection = 'profile' | 'targets' | 'supps';
+const openSections = new Map<SettingsSection, boolean>();
+
+/** Whether the user opened or closed a Settings section by hand this session; undefined if untouched. Not persisted. */
+export function isSectionOpen(id: SettingsSection): boolean | undefined {
+  return openSections.get(id);
+}
+
+export function setSectionOpen(id: SettingsSection, open: boolean): void {
+  openSections.set(id, open);
+}
+
 export function useSettings(): Settings {
   return useSyncExternalStore(subscribe, getSettings, getSettings);
 }
