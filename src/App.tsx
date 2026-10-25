@@ -40,7 +40,21 @@ export default function App() {
     <div className="mx-auto min-h-dvh max-w-md">
       {tab === 'today' && <Today onPick={(file) => setInput({ kind: 'photo', file })} onText={(text) => setInput({ kind: 'text', text })} onEdit={(meal) => setInput({ kind: 'edit', meal })} onOpenSettings={() => setTab('settings')} />}
       {tab === 'weight' && <Weight />}
-      {tab === 'history' && <History key={historyFocus ?? ''} focusDate={historyFocus} onEdit={(meal) => setInput({ kind: 'edit', meal })} />}
+      {tab === 'history' && (
+        <History
+          key={historyFocus ?? ''}
+          focusDate={historyFocus}
+          onEdit={(meal) => setInput({ kind: 'edit', meal })}
+          onPick={(file, date) => {
+            setHistoryFocus(date);
+            setInput({ kind: 'photo', file, date });
+          }}
+          onText={(text, date) => {
+            setHistoryFocus(date);
+            setInput({ kind: 'text', text, date });
+          }}
+        />
+      )}
       {tab === 'settings' && <Settings />}
       <TabBar tab={tab} onChange={changeTab} />
     </div>

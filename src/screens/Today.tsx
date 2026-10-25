@@ -10,6 +10,7 @@ import { loadRecs, markAttempted, saveRecs, slotKeyOf, slotOfKey, wasAttempted }
 import { MOODS } from '../lib/moods';
 import { TIPS } from '../lib/tips';
 import { useT, type TKey } from '../i18n';
+import AddMealSheet from '../components/AddMealSheet';
 import MealRow from '../components/MealRow';
 import NutrientBar from '../components/NutrientBar';
 import { AlertIcon, CheckIcon, PhotoIcon, XIcon } from '../components/Icons';
@@ -33,7 +34,7 @@ export default function Today({ onPick, onText, onEdit, onOpenSettings }: Props)
   const preg = usePregnancy();
   const [now, setNow] = useState(nowState);
   const [showAll, setShowAll] = useState(false);
-  const [textOpen, setTextOpen] = useState(false);
+  const [sheetOpen, setSheetOpen] = useState(false);
   const [text, setText] = useState('');
   const [recs, setRecs] = useState<Recommendation[] | null>(() => {
     const n = nowState();
@@ -384,45 +385,24 @@ export default function Today({ onPick, onText, onEdit, onOpenSettings }: Props)
             {t('today.pick')}
           </button>
           <span className="text-line">|</span>
-          <button type="button" onClick={() => setTextOpen(true)} className="px-1 py-2.5 text-accent">
+          <button type="button" onClick={() => setSheetOpen(true)} className="px-1 py-2.5 text-accent">
             {t('today.text')}
           </button>
         </div>
       </div>
 
-      {textOpen && (
-        <div className="fixed inset-0 z-30 flex items-end bg-ink/30" onClick={() => setTextOpen(false)}>
-          <div className="mx-auto w-full max-w-md rounded-t-3xl bg-card px-5 pt-5" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 20px)' }} onClick={(e) => e.stopPropagation()}>
-            <p className="font-medium">{t('text.title')}</p>
-            <p className="mt-0.5 text-xs text-muted">{t('text.hint')}</p>
-            <textarea
-              autoFocus
-              value={text}
-              onChange={(e) => setText(e.target.value.slice(0, 300))}
-              placeholder={t('text.placeholder')}
-              rows={3}
-              className="mt-3 w-full resize-none rounded-2xl bg-bg px-4 py-3 text-base outline-none placeholder:text-muted"
-            />
-            <div className="mt-3 flex gap-3">
-              <button type="button" onClick={() => setTextOpen(false)} className="flex-1 rounded-full border border-line py-3 font-medium">
-                {t('analyze.cancel')}
-              </button>
-              <button
-                type="button"
-                disabled={!text.trim()}
-                onClick={() => {
-                  const v = text.trim();
-                  setTextOpen(false);
-                  setText('');
-                  onText(v);
-                }}
-                className="flex-[2] rounded-full bg-accent py-3 font-medium text-on-accent disabled:opacity-40"
-              >
-                {t('text.go')}
-              </button>
-            </div>
-          </div>
-        </div>
+      {sheetOpen && (
+        <AddMealSheet
+          title={t('text.title')}
+          initialMode="text"
+          draft={text}
+          onDraftChange={setText}
+          onClose={() => setSheetOpen(false)}
+          onText={(v) => {
+            setText('');
+            onText(v);
+          }}
+        />
       )}
     </div>
   );

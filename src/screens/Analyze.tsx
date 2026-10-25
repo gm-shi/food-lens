@@ -10,7 +10,8 @@ import { useT } from '../i18n';
 import { dayLabel, timeKey, timeLabel, timestampOf } from '../lib/date';
 import { AlertIcon, MinusIcon, PlusIcon, XIcon } from '../components/Icons';
 
-export type MealInput = { kind: 'photo'; file: File } | { kind: 'text'; text: string } | { kind: 'edit'; meal: Meal };
+/** A new meal may name the day it is for (adding to an earlier day from History); the default is today. */
+export type MealInput = { kind: 'photo'; file: File; date?: string } | { kind: 'text'; text: string; date?: string } | { kind: 'edit'; meal: Meal };
 
 /** Told to the caller when a meal was saved: the day it went to. */
 export interface SavedMeal {
@@ -38,8 +39,10 @@ export default function Analyze({ input, onClose }: { input: MealInput; onClose:
   const [noteOpen, setNoteOpen] = useState(false);
   const [mealKind, setMealKind] = useState<'main' | 'snack'>(editing?.kind === 'snack' ? 'snack' : 'main');
   // The day and time the meal is logged to: now by default, so yesterday's forgotten dinner can be added today.
-  const [when, setWhen] = useState(() => ({ date: editing ? editing.date : localDateKey(), time: timeKey(editing ? editing.ts : Date.now()) }));
-  const initialWhen = useRef(when);
+  const preset = input.kind === 'edit' ? null : (input.date ?? null);
+  const [when, setWhen] = useState(() => ({ date: editing ? editing.date : (preset ?? localDateKey()), time: timeKey(editing ? editing.ts : Date.now()) }));
+  // `fromNow`: a new meal for today is stamped with the moment it is saved unless the row is touched.
+  const initialWhen = useRef({ ...when, fromNow: !editing && (preset === null || preset === localDateKey()) });
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(false);
   const [renaming, setRenaming] = useState<{ idx: number; value: string } | null>(null);
@@ -190,16 +193,19 @@ export default function Analyze({ input, onClose }: { input: MealInput; onClose:
     try {
       const items = phase.items.filter(hasSubstance);
       const kind = gdm.enabled ? mealKind : editing?.kind;
-      // Untouched day and time: a new meal is stamped with the moment it is saved, an edited meal keeps its stamp.
+      // Untouched day and time: an edited meal keeps its stamp and a new meal for today gets the moment it is saved.
       // Otherwise the chosen minute, plus the current seconds so two meals in one minute never share a timestamp
       // (the backup import tells meals apart by it).
       const untouched = when.date === initialWhen.current.date && when.time === initialWhen.current.time;
       const today = localDateKey();
       let date: string;
       let ts: number;
-      if (untouched) {
-        ts = editing ? editing.ts : Date.now();
-        date = editing ? editing.date : localDateKey(ts);
+      if (untouched && editing) {
+        ts = editing.ts;
+        date = editing.date;
+      } else if (untouched && initialWhen.current.fromNow) {
+        ts = Date.now();
+        date = localDateKey(ts);
       } else {
         date = DATE_KEY.test(when.date) && when.date <= today ? when.date : today;
         ts = timestampOf(date, when.time) + (Date.now() % 60_000);
@@ -466,12 +472,12 @@ export default function Analyze({ input, onClose }: { input: MealInput; onClose:
             )}
 
             {phase.items.length > 0 && (
-              <div className="mt-4 flex items-center justify-between gap-3 rounded-2xl bg-card px-4 py-3">
-                <span className="text-sm">
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 rounded-2xl bg-card px-4 py-3">
+                <span className="whitespace-nowrap text-sm">
                   <span className="text-muted">{t('analyze.when')}</span>
                   {when.date !== todayKey && <span className="ml-1.5 text-accent">{dayLabel(when.date, lang)}</span>}
                 </span>
-                <div className="flex items-center gap-2">
+                <div className="ml-auto flex items-center gap-2">
                   <input
                     type="date"
                     aria-label={t('analyze.date')}
