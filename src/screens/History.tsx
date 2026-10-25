@@ -7,16 +7,25 @@ import { addDays, dayLabel, parseDateKey, timeLabel, weekStartOf } from '../lib/
 import { MOODS } from '../lib/moods';
 import { useSettings } from '../lib/settings';
 import { useT } from '../i18n';
+import AddMealSheet from '../components/AddMealSheet';
 import MealRow from '../components/MealRow';
 import WeekCard from '../components/WeekCard';
-import { ChevronIcon } from '../components/Icons';
+import { ChevronIcon, PlusIcon } from '../components/Icons';
 
 function monthKey(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 
-/** `focusDate` opens the calendar on that day (used after a meal is saved to an earlier day). */
-export default function History({ onEdit, focusDate = null }: { onEdit: (meal: Meal) => void; focusDate?: string | null }) {
+interface Props {
+  onEdit: (meal: Meal) => void;
+  /** Log a photo or a description to the given day */
+  onPick: (file: File, date: string) => void;
+  onText: (text: string, date: string) => void;
+  /** Opens the calendar on that day (used after a meal is saved to an earlier day) */
+  focusDate?: string | null;
+}
+
+export default function History({ onEdit, onPick, onText, focusDate = null }: Props) {
   const t = useT();
   const { lang } = useSettings();
   const loadedMeals = useLiveQuery(() => db.meals.orderBy('ts').reverse().toArray(), []);
@@ -29,6 +38,8 @@ export default function History({ onEdit, focusDate = null }: { onEdit: (meal: M
   });
   const [selected, setSelected] = useState<string | null>(focusDate);
   const [pickedWeek, setPickedWeek] = useState<string | null>(null);
+  /** The day a meal is being added to */
+  const [adding, setAdding] = useState<string | null>(null);
 
   const days = new Map<string, Meal[]>();
   for (const m of meals) {
@@ -129,13 +140,20 @@ export default function History({ onEdit, focusDate = null }: { onEdit: (meal: M
             const n = noteByDate.get(date);
             return (
               <section key={date}>
-                <div className="mb-2 flex items-baseline justify-between px-1">
+                <div className="mb-2 flex items-center justify-between px-1">
                   <h2 className="font-medium">{dayLabel(date, lang)}</h2>
-                  {list.length > 0 && (
-                    <p className="text-sm text-muted">
-                      <span className="tabular-nums">{fmt('energy', tot.energy)}</span> {t('kcal')} · {t(list.length === 1 ? 'history.meal' : 'history.meals', { n: list.length })}
-                    </p>
-                  )}
+                  <div className="flex items-center gap-1">
+                    {list.length > 0 && (
+                      <p className="text-sm text-muted">
+                        <span className="tabular-nums">{fmt('energy', tot.energy)}</span> {t('kcal')} · {t(list.length === 1 ? 'history.meal' : 'history.meals', { n: list.length })}
+                      </p>
+                    )}
+                    {date <= today && (
+                      <button type="button" aria-label={t('history.addTo', { day: dayLabel(date, lang) })} onClick={() => setAdding(date)} className="-my-2 -mr-2 rounded-full p-2 text-accent">
+                        <PlusIcon width={18} height={18} />
+                      </button>
+                    )}
+                  </div>
                 </div>
                 {n && (
                   <ul className="mb-2 space-y-0.5 px-1 text-sm text-muted">
@@ -148,7 +166,13 @@ export default function History({ onEdit, focusDate = null }: { onEdit: (meal: M
                   </ul>
                 )}
                 {list.length === 0 && !n ? (
-                  <p className="rounded-2xl border border-dashed border-line px-4 py-6 text-center text-sm text-muted">{t('history.noneThatDay')}</p>
+                  date <= today ? (
+                    <button type="button" onClick={() => setAdding(date)} className="w-full rounded-2xl border border-dashed border-line px-4 py-6 text-center text-sm text-muted">
+                      {t('history.noneThatDay')} · <span className="text-accent">{t('history.add')}</span>
+                    </button>
+                  ) : (
+                    <p className="rounded-2xl border border-dashed border-line px-4 py-6 text-center text-sm text-muted">{t('history.noneThatDay')}</p>
+                  )
                 ) : list.length === 0 ? null : (
                   <div className="space-y-2">
                     {list.map((m) => (
@@ -161,6 +185,8 @@ export default function History({ onEdit, focusDate = null }: { onEdit: (meal: M
           })}
         </div>
       )}
+
+      {adding && <AddMealSheet title={t('history.addTo', { day: dayLabel(adding, lang) })} onClose={() => setAdding(null)} onPick={(f) => onPick(f, adding)} onText={(v) => onText(v, adding)} />}
     </div>
   );
 }
